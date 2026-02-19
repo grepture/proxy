@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: grepture/pro-actions
-          ssh-key: ${{ secrets.PRO_ACTIONS_DEPLOY_KEY }}
+          token: ${{ secrets.GHCR_TOKEN }}
           path: plugins/pro-actions
 
       - name: Log in to GHCR

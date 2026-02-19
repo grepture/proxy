@@ -39,7 +39,7 @@ app.use("*", cors());
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 
-app.all("/proxy/*", proxyHandler);
+app.all("/*", proxyHandler);
 
 // --- Start ---
 

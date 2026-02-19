@@ -1,0 +1,70 @@
+name: Release OSS proxy
+
+on:
+  release:
+    types: [published]
+
+# Only run for proxy-v* tags
+jobs:
+  release:
+    if: startsWith(github.event.release.tag_name, 'proxy-v')
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#proxy-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build OSS release
+        run: bun run build:oss
+
+      - name: Set version in OSS package.json
+        run: |
+          cd dist/oss
+          jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: dist/oss
+          file: dist/oss/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/grepture/proxy:latest
+            ghcr.io/grepture/proxy:${{ steps.version.outputs.version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        working-directory: dist/oss
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create tarball and attach to release
+        run: |
+          tar -czf grepture-proxy-${{ steps.version.outputs.version }}.tar.gz -C dist oss
+          gh release upload "${{ github.event.release.tag_name }}" \
+            grepture-proxy-${{ steps.version.outputs.version }}.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

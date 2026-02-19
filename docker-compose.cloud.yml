@@ -1,0 +1,13 @@
+services:
+  proxy:
+    image: ghcr.io/grepture/proxy-cloud:latest
+    restart: unless-stopped
+    ports:
+      - "4001:4001"
+    env_file:
+      - .env
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

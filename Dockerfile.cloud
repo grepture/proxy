@@ -1,0 +1,23 @@
+FROM oven/bun:1 AS base
+WORKDIR /app
+
+# Install proxy dependencies
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile --production
+
+# Install pro-actions plugin dependencies
+COPY plugins/pro-actions/package.json plugins/pro-actions/
+RUN cd plugins/pro-actions && bun install --production
+
+# Copy source
+COPY src/ src/
+COPY plugins/pro-actions/src/ plugins/pro-actions/src/
+COPY rules.example.json rules.example.json
+
+ENV GREPTURE_MODE=cloud
+ENV GREPTURE_PLUGINS=./plugins/pro-actions/src/index.ts
+ENV PORT=4001
+
+EXPOSE 4001
+
+CMD ["bun", "run", "src/index.ts"]

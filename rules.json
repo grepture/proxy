@@ -1,0 +1,83 @@
+[
+  {
+    "id": "redact-emails",
+    "user_id": "local",
+    "team_id": "local",
+    "name": "Redact email addresses",
+    "description": "Redact emails, phone numbers, and SSNs from input",
+    "enabled": true,
+    "apply_to": "input",
+    "sampling_rate": 100,
+    "timeout_seconds": 60,
+    "match_all": true,
+    "conditions": [],
+    "actions": [
+      {
+        "id": "1",
+        "type": "redact_pii",
+        "enabled": true,
+        "categories": ["email", "phone", "ssn"],
+        "replacement": "placeholder",
+        "mode": "redact",
+        "token_prefix": "",
+        "ttl_seconds": 0
+      }
+    ],
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  },
+  {
+    "id": "redact-credit-cards",
+    "user_id": "local",
+    "team_id": "local",
+    "name": "Mask and restore credit cards",
+    "description": "Tokenize credit card numbers so they can be restored on output",
+    "enabled": false,
+    "apply_to": "input",
+    "sampling_rate": 100,
+    "timeout_seconds": 60,
+    "match_all": true,
+    "conditions": [],
+    "actions": [
+      {
+        "id": "1",
+        "type": "redact_pii",
+        "enabled": true,
+        "categories": ["credit_card"],
+        "replacement": "placeholder",
+        "mode": "mask_and_restore",
+        "token_prefix": "cc_",
+        "ttl_seconds": 3600
+      }
+    ],
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  },
+  {
+    "id": "block-ssn-output",
+    "user_id": "local",
+    "team_id": "local",
+    "name": "Block SSNs in output",
+    "description": "Block any response that contains an SSN",
+    "enabled": false,
+    "apply_to": "output",
+    "sampling_rate": 100,
+    "timeout_seconds": 60,
+    "match_all": true,
+    "conditions": [],
+    "actions": [
+      {
+        "id": "1",
+        "type": "redact_pii",
+        "enabled": true,
+        "categories": ["ssn"],
+        "replacement": "placeholder",
+        "mode": "redact",
+        "token_prefix": "",
+        "ttl_seconds": 0
+      }
+    ],
+    "created_at": "2025-01-01T00:00:00Z",
+    "updated_at": "2025-01-01T00:00:00Z"
+  }
+]

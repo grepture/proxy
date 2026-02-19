@@ -1,0 +1,80 @@
+name: Deploy proxy (cloud)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/grepture/proxy-cloud
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v4
+
+      - name: Checkout pro-actions plugin
+        uses: actions/checkout@v4
+        with:
+          repository: grepture/pro-actions
+          ssh-key: ${{ secrets.PRO_ACTIONS_DEPLOY_KEY }}
+          path: plugins/pro-actions
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.cloud
+          push: true
+          tags: ${{ env.IMAGE }}:latest,${{ env.IMAGE }}:${{ github.sha }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        server:
+          - host: PROXY_1_HOST
+            key: PROXY_1_SSH_KEY
+          - host: PROXY_2_HOST
+            key: PROXY_2_SSH_KEY
+    steps:
+      - name: Deploy to ${{ matrix.server.host }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets[matrix.server.host] }}
+          username: root
+          key: ${{ secrets[matrix.server.key] }}
+          script: |
+            cd /opt/grepture
+            echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u grepture --password-stdin
+            docker pull ghcr.io/grepture/proxy-cloud:latest
+            docker compose -f docker-compose.cloud.yml up -d
+            docker image prune -f
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -sf http://${{ secrets[matrix.server.host] }}:4001/health | jq -r .status 2>/dev/null)
+            if [ "$STATUS" = "ok" ]; then
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Attempt $i/10 — waiting 5s..."
+            sleep 5
+          done
+          echo "Health check failed"
+          exit 1

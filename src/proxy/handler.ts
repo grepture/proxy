@@ -5,6 +5,7 @@ import { filterRules } from "../rules/filter";
 import { matchRules } from "../rules/matcher";
 import { runPipeline, type PipelineResult } from "../actions/pipeline";
 import { forwardRequest, type ForwardResult } from "./forward";
+import { extractUsage, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
 import { createDetokenizeStream } from "./detokenize-stream";
 import { config } from "../config";
@@ -144,7 +145,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
       if (inputResult.blocked) {
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, inputResult.statusCode || 403, duration, inputRulesApplied, "", {});
+        logTraffic(providers.log, ctx, inputResult.statusCode || 403, duration, inputRulesApplied, "", {}, null);
         return c.json(
           { error: inputResult.message || "Request blocked" },
           (inputResult.statusCode || 403) as ContentfulStatusCode,
@@ -189,8 +190,9 @@ export async function proxyHandler(c: Context): Promise<Response> {
       // Fire-and-forget: log after stream completes, re-redacting PII
       accumulated.then(async (fullBody) => {
         const logBody = await redactForLog(fullBody, logRedactCategories);
+        const usage = extractUsage(fullBody, ctx.targetUrl);
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers);
+        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage);
       }).catch((err) => {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
@@ -247,7 +249,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         60_000,
       );
     } else {
-      logTraffic(providers.log, ctx, 502, duration, inputRulesApplied, "", {});
+      logTraffic(providers.log, ctx, 502, duration, inputRulesApplied, "", {}, null);
       return c.json({ error: "Proxy processing error" }, 502);
     }
   }
@@ -256,6 +258,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
   const duration = performance.now() - startedAt;
   const rawLogBody = forwardResult.mode === "buffered" ? forwardResult.body : "";
   const logBody = await redactForLog(rawLogBody, logRedactCategories);
+  const usage = rawLogBody ? extractUsage(rawLogBody, ctx.targetUrl) : null;
   logTraffic(
     providers.log,
     ctx,
@@ -264,6 +267,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     inputRulesApplied,
     logBody,
     forwardResult.headers,
+    usage,
   );
 
   // --- Return response ---
@@ -368,6 +372,7 @@ function logTraffic(
   rulesApplied: string[],
   responseBody: string,
   responseHeaders: Record<string, string>,
+  usage: UsageInfo | null,
 ): void {
   const zeroData = ctx.auth.zero_data_mode;
 
@@ -383,6 +388,11 @@ function logTraffic(
     request_body: zeroData ? "" : ctx.body.slice(0, 50_000),
     response_headers: zeroData ? {} : responseHeaders,
     response_body: zeroData ? "" : responseBody.slice(0, 50_000),
+    prompt_tokens: usage?.prompt_tokens ?? null,
+    completion_tokens: usage?.completion_tokens ?? null,
+    total_tokens: usage?.total_tokens ?? null,
+    model: usage?.model ?? null,
+    provider: usage?.provider ?? null,
   };
 
   log.push(entry);

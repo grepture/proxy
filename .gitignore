@@ -4,3 +4,4 @@ plugins/
 .DS_Store
 .env*
 *.tsbuildinfo
+rules.json

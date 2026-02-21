@@ -166,6 +166,11 @@ export type TrafficLogEntry = {
   request_body: string;
   response_headers: Record<string, string>;
   response_body: string;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  model?: string | null;
+  provider?: string | null;
   created_at?: string;
 };
 

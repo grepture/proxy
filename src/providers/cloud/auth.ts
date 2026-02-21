@@ -3,7 +3,7 @@ import { supabase } from "../../infra/supabase";
 import type { AuthProvider } from "../types";
 import type { AuthInfo } from "../../types";
 
-const AUTH_TTL = 60; // seconds
+const AUTH_TTL = 300; // seconds (5 min — matches rules cache TTL)
 
 async function sha256(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);

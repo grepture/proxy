@@ -31,3 +31,11 @@ export interface QuotaChecker {
   check(teamId: string, tier: string): Promise<{ allowed: boolean }>;
   checkAiSampling(teamId: string, tier: string): Promise<{ allowed: boolean; used: number; limit: number }>;
 }
+
+export interface RateQuotaChecker {
+  check(teamId: string, tier: string): Promise<{
+    rate: { allowed: boolean; retryAfter?: number; limit?: number };
+    quota: { allowed: boolean };
+  }>;
+  checkAiSampling(teamId: string, tier: string): Promise<{ allowed: boolean; used: number; limit: number }>;
+}

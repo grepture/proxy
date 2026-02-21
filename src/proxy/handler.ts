@@ -38,38 +38,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     return c.json({ error: "Invalid API key" }, 401);
   }
 
-  // --- Rate limit ---
-  try {
-    const rate = await providers.rateLimiter.check(auth.team_id, auth.tier);
-    if (!rate.allowed) {
-      if (rate.retryAfter) c.header("Retry-After", String(rate.retryAfter));
-      if (rate.limit) c.header("X-RateLimit-Limit", String(rate.limit));
-      c.header("X-RateLimit-Remaining", "0");
-      return c.json(
-        { error: "Rate limit exceeded. Please slow down." },
-        429,
-      );
-    }
-  } catch (err) {
-    console.error("Rate limit check error:", err);
-    // Fail open — don't block if rate limiter is down
-  }
-
-  // --- Quota check ---
-  try {
-    const quota = await providers.quota.check(auth.team_id, auth.tier);
-    if (!quota.allowed) {
-      return c.json(
-        { error: "Monthly request quota exceeded. Please upgrade." },
-        429,
-      );
-    }
-  } catch (err) {
-    console.error("Quota check error:", err);
-    // Don't block requests if quota check fails
-  }
-
-  // --- Target URL ---
+  // --- Target URL (synchronous — do before async work) ---
   const targetUrl = c.req.header("x-grepture-target");
   if (!targetUrl) {
     return c.json({ error: "Missing X-Grepture-Target header" }, 400);
@@ -81,24 +50,55 @@ export async function proxyHandler(c: Context): Promise<Response> {
     return c.json({ error: "Invalid X-Grepture-Target URL" }, 400);
   }
 
-  // --- Parse request body ---
-  let body: string;
-  try {
-    const raw = await c.req.arrayBuffer();
+  // --- Kick off parallel work (all need auth, none depend on each other) ---
+  const rateQuotaPromise = providers.rateQuota
+    .check(auth.team_id, auth.tier)
+    .catch((err: unknown) => {
+      console.error("Rate/quota check error:", err);
+      return null; // Fail open
+    });
+
+  const rulesPromise = providers.rules.loadRules(auth.team_id);
+
+  const bodyPromise = c.req.arrayBuffer().then((raw) => {
     if (raw.byteLength > config.maxBodySize) {
-      return c.json({ error: "Request body too large (max 10MB)" }, 413);
+      return { error: "Request body too large (max 10MB)" as const, body: "", parsedBody: null as unknown };
     }
-    body = new TextDecoder().decode(raw);
-  } catch {
-    body = "";
+    const body = new TextDecoder().decode(raw);
+    let parsedBody: unknown = null;
+    try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
+    return { error: null, body, parsedBody };
+  }).catch(() => ({ error: null, body: "", parsedBody: null as unknown }));
+
+  // Rate+quota and body can resolve independently; rules may throw (handled in try below)
+  const [rateQuota, bodyResult] = await Promise.all([rateQuotaPromise, bodyPromise]);
+
+  // --- Check rate limit result ---
+  if (rateQuota) {
+    if (!rateQuota.rate.allowed) {
+      if (rateQuota.rate.retryAfter) c.header("Retry-After", String(rateQuota.rate.retryAfter));
+      if (rateQuota.rate.limit) c.header("X-RateLimit-Limit", String(rateQuota.rate.limit));
+      c.header("X-RateLimit-Remaining", "0");
+      return c.json(
+        { error: "Rate limit exceeded. Please slow down." },
+        429,
+      );
+    }
+    if (!rateQuota.quota.allowed) {
+      return c.json(
+        { error: "Monthly request quota exceeded. Please upgrade." },
+        429,
+      );
+    }
   }
 
-  let parsedBody: unknown = null;
-  try {
-    parsedBody = JSON.parse(body);
-  } catch {
-    // Not JSON — that's fine
+  // --- Check body parse result ---
+  if (bodyResult.error) {
+    return c.json({ error: bodyResult.error }, 413);
   }
+
+  const body = bodyResult.body;
+  const parsedBody = bodyResult.parsedBody;
 
   // --- Detect streaming ---
   const streamingRequested =
@@ -131,7 +131,8 @@ export async function proxyHandler(c: Context): Promise<Response> {
   let aiSampling: { used: number; limit: number } | undefined;
 
   try {
-    const allRules = await providers.rules.loadRules(auth.team_id);
+    // Await rules (already started in parallel above)
+    const allRules = await rulesPromise;
 
     // Input rules
     const inputRules = filterRules(allRules, "input");

@@ -1,6 +1,24 @@
 {
   "name": "@grepture/proxy",
-  "version": "0.1.1",
+  "version": "0.1.2",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/grepture/grepture",
+    "directory": "proxy"
+  },
+  "homepage": "https://grepture.com",
+  "keywords": [
+    "proxy",
+    "ai",
+    "llm",
+    "api-gateway",
+    "guardrails",
+    "rate-limiting",
+    "tokenization",
+    "pii",
+    "redaction"
+  ],
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "dev:cloud": "GREPTURE_MODE=cloud GREPTURE_PLUGINS=./plugins/pro-actions/src/index.ts bun run --watch src/index.ts",

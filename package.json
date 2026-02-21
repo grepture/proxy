@@ -1,6 +1,6 @@
 {
   "name": "@grepture/proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "dev:cloud": "GREPTURE_MODE=cloud GREPTURE_PLUGINS=./plugins/pro-actions/src/index.ts bun run --watch src/index.ts",

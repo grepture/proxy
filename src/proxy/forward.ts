@@ -21,10 +21,16 @@ export async function forwardRequest(
     outboundHeaders[key] = value;
   }
 
-  // Map X-Grepture-Auth-Forward → Authorization on outbound
+  // Map X-Grepture-Auth-Forward → appropriate auth header on outbound
   const authForward = ctx.headers["x-grepture-auth-forward"];
   if (authForward) {
-    outboundHeaders["authorization"] = authForward;
+    const host = new URL(ctx.targetUrl).hostname;
+    if (host.includes("anthropic.com")) {
+      // Anthropic uses x-api-key header; strip Bearer prefix if present
+      outboundHeaders["x-api-key"] = authForward.replace(/^Bearer\s+/i, "");
+    } else {
+      outboundHeaders["authorization"] = authForward;
+    }
   }
 
   // Add X-Forwarded-For

@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { config } from "./config";
 import { proxyHandler } from "./proxy/handler";
+import { scanHandler, accountHandler } from "./scan/handler";
 import { getProviders } from "./providers";
 import { registerBuiltinActions } from "./actions/builtin";
 
@@ -38,6 +39,9 @@ app.use("*", cors());
 // --- Routes ---
 
 app.get("/health", (c) => c.json({ status: "ok" }));
+
+app.post("/v1/scan", scanHandler);
+app.get("/v1/account", accountHandler);
 
 app.all("/*", proxyHandler);
 

@@ -20,7 +20,7 @@
  *   REQUESTS           — Number of request pairs (default: 10)
  */
 
-const PROXY_URL = process.env.PROXY_URL || "http://localhost:4001"; // https://proxy.grepture.com
+const PROXY_URL = process.env.PROXY_URL || "https://proxy.grepture.com";
 const GREPTURE_API_KEY = process.env.GREPTURE_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";

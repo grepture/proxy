@@ -183,6 +183,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         responseHeaders.set(key, value);
       }
       responseHeaders.set("x-request-id", requestId);
+    
       responseHeaders.set("x-grepture-rules-applied", inputRulesApplied.join(","));
       if (aiSampling && aiSampling.limit !== Infinity) {
         responseHeaders.set("x-grepture-ai-sampling", `${aiSampling.used}/${aiSampling.limit}`);
@@ -279,6 +280,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     responseHeaders.set(key, value);
   }
   responseHeaders.set("x-request-id", requestId);
+
   responseHeaders.set("x-grepture-rules-applied", inputRulesApplied.join(","));
   if (aiSampling && aiSampling.limit !== Infinity) {
     responseHeaders.set("x-grepture-ai-sampling", `${aiSampling.used}/${aiSampling.limit}`);

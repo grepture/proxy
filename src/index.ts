@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import { config } from "./config";
 import { proxyHandler } from "./proxy/handler";
 import { scanHandler, accountHandler } from "./scan/handler";
+import { scanFilesHandler } from "./scan/files-handler";
 import { getProviders } from "./providers";
 import { registerBuiltinActions } from "./actions/builtin";
 
@@ -41,6 +42,7 @@ app.use("*", cors());
 app.get("/health", (c) => c.json({ status: "ok" }));
 
 app.post("/v1/scan", scanHandler);
+app.post("/v1/scan-files", scanFilesHandler);
 app.get("/v1/account", accountHandler);
 
 app.all("/*", proxyHandler);

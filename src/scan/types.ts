@@ -28,6 +28,24 @@ export type ScanResponse = {
   checks_skipped: string[];
 };
 
+export type ScanFilesRequest = {
+  files: Array<{ path: string; text: string }>;
+  checks: ScanCheck[];
+};
+
+export type ScanFileResult = {
+  path: string;
+  results: Record<string, ScanCheckResult>;
+  skipped?: string;
+};
+
+export type ScanFilesResponse = {
+  files: ScanFileResult[];
+  tier: string;
+  checks_run: string[];
+  checks_skipped: Array<{ check: string; reason: string }>;
+};
+
 export type AccountResponse = {
   tier: string;
   team_id: string;

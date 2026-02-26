@@ -3,6 +3,8 @@ import type { AuthInfo, Rule, TrafficLogEntry, RuleAction, RequestContext, Actio
 export interface ActionPlugin {
   type: string;
   execute(ctx: RequestContext, action: RuleAction, vault: TokenVault): Promise<ActionResult>;
+  /** Stateless scan — used by /v1/scan and /v1/scan-files endpoints */
+  scan?(text: string): Promise<unknown>;
 }
 
 export interface AuthProvider {

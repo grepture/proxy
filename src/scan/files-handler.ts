@@ -3,6 +3,7 @@ import { getProviders } from "../providers";
 import { detectPii } from "../pii/detector";
 import type { PiiCategory, AuthInfo } from "../types";
 import { getScanFn } from "./registry";
+import { getAction } from "../actions/registry";
 import type {
   ScanCheck,
   ScanFilesRequest,
@@ -10,8 +11,35 @@ import type {
   ScanFileResult,
   ScanCheckResult,
   PiiResult,
-  SkippedResult,
 } from "./types";
+
+// Map scan check names to action types in the action registry
+const CHECK_TO_ACTION: Record<string, string> = {
+  ai_pii: "ai_detect_pii",
+  injection: "ai_detect_injection",
+  toxicity: "ai_detect_toxicity",
+  dlp: "ai_detect_dlp",
+  compliance: "ai_detect_compliance",
+};
+
+// Reverse map: action type → scan check name
+const ACTION_TO_CHECK: Record<string, string> = Object.fromEntries(
+  Object.entries(CHECK_TO_ACTION).map(([check, action]) => [action, check]),
+);
+
+/** Resolve a scan function: try scan registry first, then action registry */
+function resolveScanFn(check: string): ((text: string) => Promise<unknown>) | undefined {
+  const scanFn = getScanFn(check);
+  if (scanFn) return scanFn;
+
+  const actionType = CHECK_TO_ACTION[check];
+  if (actionType) {
+    const action = getAction(actionType);
+    if (action?.scan) return (text) => action.scan!(text);
+  }
+
+  return undefined;
+}
 
 const ALL_CHECKS: ScanCheck[] = ["pii", "ai_pii", "toxicity", "injection", "dlp", "compliance"];
 
@@ -128,15 +156,32 @@ export async function scanFilesHandler(c: Context): Promise<Response> {
     return c.json({ error: "Total payload exceeds 500KB limit" }, 400);
   }
 
+  // Load team rules and extract which AI checks are enabled
+  const allRules = await providers.rules.loadRules(auth.team_id);
+  const enabledChecks = new Set<string>();
+  for (const rule of allRules) {
+    if (!rule.enabled) continue;
+    for (const action of rule.actions) {
+      if (!action.enabled) continue;
+      const check = ACTION_TO_CHECK[action.type];
+      if (check) enabledChecks.add(check);
+    }
+  }
+
   // Determine which checks this tier allows
   const allowedChecks = checksForTier(auth.tier);
   const checksRun: string[] = [];
   const checksSkipped: Array<{ check: string; reason: string }> = [];
 
-  // Resolve tier gating once
+  // Resolve tier gating + rule gating
   const effectiveChecks: ScanCheck[] = [];
   for (const check of body.checks) {
-    if (!allowedChecks.has(check)) {
+    if (check === "pii") {
+      // pii (regex) is always allowed — doesn't require a rule
+      effectiveChecks.push(check);
+    } else if (!enabledChecks.has(check)) {
+      checksSkipped.push({ check, reason: "no_matching_rule" });
+    } else if (!allowedChecks.has(check)) {
       const reason = PRO_CHECKS.has(check) ? "requires_pro" : "requires_business";
       checksSkipped.push({ check, reason });
     } else {
@@ -174,9 +219,23 @@ export async function scanFilesHandler(c: Context): Promise<Response> {
     effectiveChecks.push(...remaining);
   }
 
-  // Track which checks actually ran
+  // Resolve scan functions once — separate available from unavailable
+  const runnableChecks: ScanCheck[] = [];
+  const resolvedFns = new Map<string, (text: string) => Promise<unknown>>();
   for (const check of effectiveChecks) {
-    checksRun.push(check);
+    if (check === "pii") {
+      runnableChecks.push(check);
+      checksRun.push(check);
+    } else {
+      const fn = resolveScanFn(check);
+      if (fn) {
+        runnableChecks.push(check);
+        checksRun.push(check);
+        resolvedFns.set(check, fn);
+      } else {
+        checksSkipped.push({ check, reason: "unavailable" });
+      }
+    }
   }
 
   // Process each file
@@ -197,7 +256,7 @@ export async function scanFilesHandler(c: Context): Promise<Response> {
 
     const results: Record<string, ScanCheckResult> = {};
 
-    for (const check of effectiveChecks) {
+    for (const check of runnableChecks) {
       if (check === "pii") {
         const matches = detectPii(file.text, PII_CATEGORIES);
         results.pii = {
@@ -211,15 +270,9 @@ export async function scanFilesHandler(c: Context): Promise<Response> {
         continue;
       }
 
-      // AI checks via scan registry
-      const scanFn = getScanFn(check);
-      if (!scanFn) {
-        // Don't add to results — check is just unavailable
-        continue;
-      }
-
+      const fn = resolvedFns.get(check)!;
       try {
-        const fnResult = await scanFn(file.text);
+        const fnResult = await fn(file.text);
         results[check] = fnResult as ScanCheckResult;
       } catch (err) {
         console.error(`Scan check "${check}" failed for ${file.path}:`, err);

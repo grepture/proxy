@@ -16,7 +16,7 @@ export type ClassificationResult = {
 
 export type SkippedResult = {
   skipped: true;
-  reason: "requires_pro" | "requires_business" | "ai_quota_exceeded";
+  reason: "requires_pro" | "requires_business" | "ai_quota_exceeded" | "no_matching_rule";
 };
 
 export type ScanCheckResult = PiiResult | ClassificationResult | SkippedResult;

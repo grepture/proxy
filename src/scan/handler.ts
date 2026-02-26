@@ -3,6 +3,7 @@ import { getProviders } from "../providers";
 import { detectPii } from "../pii/detector";
 import type { PiiCategory, AuthInfo } from "../types";
 import { getScanFn } from "./registry";
+import { getAction } from "../actions/registry";
 import type {
   ScanCheck,
   ScanRequest,
@@ -13,6 +14,34 @@ import type {
   SkippedResult,
   AccountResponse,
 } from "./types";
+
+// Map scan check names to action types in the action registry
+const CHECK_TO_ACTION: Record<string, string> = {
+  ai_pii: "ai_detect_pii",
+  injection: "ai_detect_injection",
+  toxicity: "ai_detect_toxicity",
+  dlp: "ai_detect_dlp",
+  compliance: "ai_detect_compliance",
+};
+
+// Reverse map: action type → scan check name
+const ACTION_TO_CHECK: Record<string, string> = Object.fromEntries(
+  Object.entries(CHECK_TO_ACTION).map(([check, action]) => [action, check]),
+);
+
+/** Resolve a scan function: try scan registry first, then action registry */
+function resolveScanFn(check: string): ((text: string) => Promise<unknown>) | undefined {
+  const scanFn = getScanFn(check);
+  if (scanFn) return scanFn;
+
+  const actionType = CHECK_TO_ACTION[check];
+  if (actionType) {
+    const action = getAction(actionType);
+    if (action?.scan) return (text) => action.scan!(text);
+  }
+
+  return undefined;
+}
 
 const ALL_CHECKS: ScanCheck[] = ["pii", "ai_pii", "toxicity", "injection", "dlp", "compliance"];
 
@@ -111,6 +140,18 @@ export async function scanHandler(c: Context): Promise<Response> {
     return c.json({ error: `Invalid checks: ${invalidChecks.join(", ")}` }, 400);
   }
 
+  // Load team rules and extract which AI checks are enabled
+  const allRules = await providers.rules.loadRules(auth.team_id);
+  const enabledChecks = new Set<string>();
+  for (const rule of allRules) {
+    if (!rule.enabled) continue;
+    for (const action of rule.actions) {
+      if (!action.enabled) continue;
+      const scanCheck = ACTION_TO_CHECK[action.type];
+      if (scanCheck) enabledChecks.add(scanCheck);
+    }
+  }
+
   // Determine which checks this tier allows
   const allowedChecks = checksForTier(auth.tier);
   const results: Record<string, ScanCheckResult> = {};
@@ -134,6 +175,13 @@ export async function scanHandler(c: Context): Promise<Response> {
   }
 
   for (const check of body.checks) {
+    // Rule gating — pii (regex) is always allowed without a rule
+    if (check !== "pii" && !enabledChecks.has(check)) {
+      results[check] = { skipped: true, reason: "no_matching_rule" } as SkippedResult;
+      checksSkipped.push(check);
+      continue;
+    }
+
     // Tier gating
     if (!allowedChecks.has(check)) {
       const reason = PRO_CHECKS.has(check) ? "requires_pro" : "requires_business";
@@ -164,8 +212,8 @@ export async function scanHandler(c: Context): Promise<Response> {
       continue;
     }
 
-    // AI checks via scan registry
-    const scanFn = getScanFn(check);
+    // AI checks via scan registry or action registry
+    const scanFn = resolveScanFn(check);
     if (!scanFn) {
       results[check] = { skipped: true, reason: "requires_business" } as SkippedResult;
       checksSkipped.push(check);

@@ -1,10 +1,10 @@
 {
   "name": "@grepture/proxy",
-  "version": "0.1.2",
-  "license": "Apache-2.0",
+  "version": "0.1.3",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/grepture/grepture",
+    "url": "https://github.com/grepture/proxy",
     "directory": "proxy"
   },
   "homepage": "https://grepture.com",

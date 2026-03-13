@@ -171,6 +171,8 @@ export type TrafficLogEntry = {
   total_tokens?: number | null;
   model?: string | null;
   provider?: string | null;
+  original_request_body?: string | null;
+  trace_id?: string | null;
   created_at?: string;
 };
 
@@ -183,6 +185,38 @@ export type ApiSettings = {
   zero_data_mode: boolean;
   created_at: string;
   updated_at: string;
+};
+
+// --- Prompt types ---
+
+export type PromptMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export type PromptVariable = {
+  name: string;
+  type: "string" | "number" | "boolean";
+  required: boolean;
+  default?: string;
+};
+
+export type PromptRecord = {
+  id: string;
+  team_id: string;
+  slug: string;
+  name: string;
+  skip_rules: boolean;
+  active_version: number | null;
+};
+
+export type PromptVersionRecord = {
+  id: string;
+  prompt_id: string;
+  version: number | null;
+  messages: PromptMessage[];
+  variables: PromptVariable[] | null;
+  published_at: string | null;
 };
 
 // --- Proxy-specific types ---
@@ -204,6 +238,7 @@ export type RequestContext = {
   body: string;
   parsedBody: unknown;
   startedAt: number;
+  traceId: string | null;
 };
 
 export type ActionResult = {

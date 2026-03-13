@@ -45,6 +45,54 @@ app.post("/v1/scan", scanHandler);
 app.post("/v1/scan-files", scanFilesHandler);
 app.get("/v1/account", accountHandler);
 
+app.get("/v1/prompts", async (c) => {
+  const authHeader = c.req.header("authorization") || "";
+  const apiKey = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (!apiKey) return c.json({ error: "Missing Authorization header" }, 401);
+
+  const providers = getProviders();
+  const auth = await providers.auth.authenticate(apiKey);
+  if (!auth) return c.json({ error: "Invalid API key" }, 401);
+
+  const { supabase } = require("./infra/supabase");
+  const { data, error } = await supabase
+    .from("prompts")
+    .select("id, slug, name, active_version, updated_at")
+    .eq("team_id", auth.team_id)
+    .order("updated_at", { ascending: false });
+
+  if (error) return c.json({ error: "Failed to list prompts" }, 500);
+  return c.json(data ?? []);
+});
+
+app.get("/v1/prompts/:slugRef", async (c) => {
+  const authHeader = c.req.header("authorization") || "";
+  const apiKey = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (!apiKey) return c.json({ error: "Missing Authorization header" }, 401);
+
+  const providers = getProviders();
+  const auth = await providers.auth.authenticate(apiKey);
+  if (!auth) return c.json({ error: "Invalid API key" }, 401);
+
+  const slugRef = c.req.param("slugRef");
+  const atIdx = slugRef.indexOf("@");
+  const slug = atIdx >= 0 ? slugRef.slice(0, atIdx) : slugRef;
+  const ref = atIdx >= 0 ? slugRef.slice(atIdx + 1) : undefined;
+
+  const { fetchPrompt } = require("./prompts/cache");
+  const result = await fetchPrompt(auth.team_id, slug, ref);
+  if (!result) return c.json({ error: "Prompt not found" }, 404);
+
+  return c.json({
+    slug: result.prompt.slug,
+    name: result.prompt.name,
+    skip_rules: result.prompt.skip_rules,
+    version: result.version.version,
+    messages: result.version.messages,
+    variables: result.version.variables,
+  });
+});
+
 app.all("/*", proxyHandler);
 
 // --- Start ---

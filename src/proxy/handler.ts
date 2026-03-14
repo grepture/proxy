@@ -131,6 +131,8 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
   // --- Prompt resolution (before rules) ---
   let skipRules = false;
+  let resolvedPromptId: string | null = null;
+  let resolvedPromptVersion: number | null = null;
   const promptSlugHeader = c.req.header("x-grepture-prompt");
   if (promptSlugHeader) {
     // Parse "slug" or "slug@ref"
@@ -152,6 +154,9 @@ export async function proxyHandler(c: Context): Promise<Response> {
     if (!resolved) {
       return c.json({ error: `Prompt "${promptSlugHeader}" not found` }, 404);
     }
+
+    resolvedPromptId = resolved.prompt.id;
+    resolvedPromptVersion = resolved.version.version; // integer or null for draft
 
     // Resolve template
     const resolvedMessages = resolveMessages(resolved.version.messages, variables);
@@ -190,7 +195,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
       if (inputResult.blocked) {
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, inputResult.statusCode || 403, duration, inputRulesApplied, "", {}, null, body);
+        logTraffic(providers.log, ctx, inputResult.statusCode || 403, duration, inputRulesApplied, "", {}, null, body, resolvedPromptId, resolvedPromptVersion);
         return c.json(
           { error: inputResult.message || "Request blocked" },
           (inputResult.statusCode || 403) as ContentfulStatusCode,
@@ -238,7 +243,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         const logBody = await redactForLog(fullBody, logRedactCategories);
         const usage = extractUsage(fullBody, ctx.targetUrl);
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage, body);
+        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage, body, resolvedPromptId, resolvedPromptVersion);
       }).catch((err) => {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
@@ -295,7 +300,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         60_000,
       );
     } else {
-      logTraffic(providers.log, ctx, 502, duration, inputRulesApplied, "", {}, null, body);
+      logTraffic(providers.log, ctx, 502, duration, inputRulesApplied, "", {}, null, body, resolvedPromptId, resolvedPromptVersion);
       return c.json({ error: "Proxy processing error" }, 502);
     }
   }
@@ -315,6 +320,8 @@ export async function proxyHandler(c: Context): Promise<Response> {
     forwardResult.headers,
     usage,
     body,
+    resolvedPromptId,
+    resolvedPromptVersion,
   );
 
   // --- Return response ---
@@ -422,6 +429,8 @@ function logTraffic(
   responseHeaders: Record<string, string>,
   usage: UsageInfo | null,
   originalBody?: string,
+  promptId?: string | null,
+  promptVersion?: number | null,
 ): void {
   const zeroData = ctx.auth.zero_data_mode;
 
@@ -447,6 +456,8 @@ function logTraffic(
     provider: usage?.provider ?? null,
     original_request_body: zeroData ? null : (origDiffers ? originalBody!.slice(0, 50_000) : null),
     trace_id: ctx.traceId,
+    prompt_id: promptId ?? null,
+    prompt_version: promptVersion ?? null,
   };
 
   log.push(entry);

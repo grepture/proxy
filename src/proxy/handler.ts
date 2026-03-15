@@ -111,6 +111,9 @@ export async function proxyHandler(c: Context): Promise<Response> {
   // --- Extract trace ID (optional, for conversation tracing) ---
   const traceId = c.req.header("x-grepture-trace-id") || null;
 
+  // --- Extract session ID (optional, for dev session grouping) ---
+  const sessionId = c.req.header("x-grepture-session-id") || null;
+
   // --- Build request context ---
   const headers: Record<string, string> = {};
   c.req.raw.headers.forEach((value, key) => {
@@ -127,6 +130,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     parsedBody,
     startedAt,
     traceId,
+    sessionId,
   };
 
   // --- Prompt resolution (before rules) ---
@@ -456,6 +460,7 @@ function logTraffic(
     provider: usage?.provider ?? null,
     original_request_body: zeroData ? null : (origDiffers ? originalBody!.slice(0, 50_000) : null),
     trace_id: ctx.traceId,
+    session_id: ctx.sessionId,
     prompt_id: promptId ?? null,
     prompt_version: promptVersion ?? null,
   };

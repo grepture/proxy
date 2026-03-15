@@ -411,6 +411,26 @@ async function redactForLog(body: string, categories: PiiCategory[]): Promise<st
   return replacePii(body, matches, "placeholder");
 }
 
+function redactKey(value: string): string {
+  // "Bearer sk-abc123xyz" → "Bearer sk-abc...xyz"
+  const stripped = value.replace(/^Bearer\s+/i, "");
+  if (stripped.length <= 8) return "***";
+  return `${stripped.slice(0, 4)}...${stripped.slice(-4)}`;
+}
+
+function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (lower === "x-grepture-auth-forward" || lower === "authorization") {
+      out[key] = redactKey(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function redactUrl(url: string): string {
   try {
     const parsed = new URL(url);
@@ -449,7 +469,7 @@ function logTraffic(
     status_code: statusCode,
     rules_applied: rulesApplied,
     duration_ms: Math.round(durationMs),
-    request_headers: zeroData ? {} : ctx.headers,
+    request_headers: zeroData ? {} : redactHeaders(ctx.headers),
     request_body: zeroData ? "" : ctx.body.slice(0, 50_000),
     response_headers: zeroData ? {} : responseHeaders,
     response_body: zeroData ? "" : responseBody.slice(0, 50_000),

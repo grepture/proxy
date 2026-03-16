@@ -41,7 +41,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
   }
 
   // --- Target URL (synchronous — do before async work) ---
-  const targetUrl = c.req.header("x-grepture-target");
+  const targetUrl = c.req.header("x-grepture-target") || (c.get("injectedTarget" as never) as string | undefined);
   if (!targetUrl) {
     return c.json({ error: "Missing X-Grepture-Target header" }, 400);
   }

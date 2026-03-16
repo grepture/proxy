@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { config } from "./config";
 import { proxyHandler } from "./proxy/handler";
+import { anthropicMiddleware } from "./proxy/anthropic-middleware";
 import { scanHandler, accountHandler } from "./scan/handler";
 import { scanFilesHandler } from "./scan/files-handler";
 import { getProviders } from "./providers";
@@ -93,6 +94,8 @@ app.get("/v1/prompts/:slugRef", async (c) => {
   });
 });
 
+app.use("/claude/v1/messages", anthropicMiddleware);
+app.use("/claude/v1/messages/*", anthropicMiddleware);
 app.all("/*", proxyHandler);
 
 // --- Start ---

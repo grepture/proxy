@@ -20,6 +20,7 @@ export const config = {
   upstashRedisUrl: requiredInCloud("UPSTASH_REDIS_URL"),
   upstashRedisToken: requiredInCloud("UPSTASH_REDIS_TOKEN"),
   plugins: process.env.GREPTURE_PLUGINS ? process.env.GREPTURE_PLUGINS.split(",").map((p) => p.trim()) : [],
+  anthropicTarget: process.env.GREPTURE_ANTHROPIC_TARGET || "https://api.anthropic.com",
   port: parseInt(process.env.PORT || "4001", 10),
   maxBodySize: 10 * 1024 * 1024, // 10MB
 

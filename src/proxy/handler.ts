@@ -8,6 +8,7 @@ import { forwardRequest, type ForwardResult } from "./forward";
 import { extractUsage, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
 import { createDetokenizeStream } from "./detokenize-stream";
+import { createResponsesToChatStream } from "./responses-to-chat-stream";
 import { config } from "../config";
 import { detectPii } from "../pii/detector";
 import { replacePii } from "../pii/replacer";
@@ -62,15 +63,22 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
   const rulesPromise = providers.rules.loadRules(auth.team_id);
 
-  const bodyPromise = c.req.arrayBuffer().then((raw) => {
-    if (raw.byteLength > config.maxBodySize) {
-      return { error: "Request body too large (max 10MB)" as const, body: "", parsedBody: null as unknown };
-    }
-    const body = new TextDecoder().decode(raw);
-    let parsedBody: unknown = null;
-    try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
-    return { error: null, body, parsedBody };
-  }).catch(() => ({ error: null, body: "", parsedBody: null as unknown }));
+  const injectedBody = c.get("injectedBody" as never) as string | undefined;
+  const bodyPromise = injectedBody
+    ? Promise.resolve((() => {
+        let parsedBody: unknown = null;
+        try { parsedBody = JSON.parse(injectedBody); } catch { /* not JSON */ }
+        return { error: null, body: injectedBody, parsedBody };
+      })())
+    : c.req.arrayBuffer().then((raw) => {
+        if (raw.byteLength > config.maxBodySize) {
+          return { error: "Request body too large (max 10MB)" as const, body: "", parsedBody: null as unknown };
+        }
+        const body = new TextDecoder().decode(raw);
+        let parsedBody: unknown = null;
+        try { parsedBody = JSON.parse(body); } catch { /* not JSON */ }
+        return { error: null, body, parsedBody };
+      }).catch(() => ({ error: null, body: "", parsedBody: null as unknown }));
 
   // Rate+quota and body can resolve independently; rules may throw (handled in try below)
   const [rateQuota, bodyResult] = await Promise.all([rateQuotaPromise, bodyPromise]);
@@ -221,9 +229,14 @@ export async function proxyHandler(c: Context): Promise<Response> {
     // --- Streaming path ---
     if (forwardResult.mode === "streaming") {
       const tokenizePrefixes = collectTokenPrefixes(allRules, inputRulesApplied);
+      const translateResponsesToChat = c.get("translateResponsesToChat" as never) as boolean | undefined;
+
+      const upstreamBody = translateResponsesToChat
+        ? createResponsesToChatStream(forwardResult.rawBody)
+        : forwardResult.rawBody;
 
       const { stream, accumulated } = createDetokenizeStream(
-        forwardResult.rawBody,
+        upstreamBody,
         auth.team_id,
         tokenizePrefixes,
         providers.vault,
@@ -236,8 +249,10 @@ export async function proxyHandler(c: Context): Promise<Response> {
         responseHeaders.set(key, value);
       }
       responseHeaders.set("x-request-id", requestId);
-    
       responseHeaders.set("x-grepture-rules-applied", inputRulesApplied.join(","));
+      // Required for SSE: prevent buffering by clients and intermediaries
+      responseHeaders.set("cache-control", "no-cache");
+      responseHeaders.set("x-accel-buffering", "no");
       if (aiSampling && aiSampling.limit !== Infinity) {
         responseHeaders.set("x-grepture-ai-sampling", `${aiSampling.used}/${aiSampling.limit}`);
       }

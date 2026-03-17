@@ -21,6 +21,7 @@ export const config = {
   upstashRedisToken: requiredInCloud("UPSTASH_REDIS_TOKEN"),
   plugins: process.env.GREPTURE_PLUGINS ? process.env.GREPTURE_PLUGINS.split(",").map((p) => p.trim()) : [],
   anthropicTarget: process.env.GREPTURE_ANTHROPIC_TARGET || "https://api.anthropic.com",
+  openaiTarget: process.env.GREPTURE_OPENAI_TARGET || "https://api.openai.com",
   port: parseInt(process.env.PORT || "4001", 10),
   maxBodySize: 10 * 1024 * 1024, // 10MB
 

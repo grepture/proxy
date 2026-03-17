@@ -62,8 +62,7 @@ export async function forwardRequest(
     // Streaming mode: return raw stream if upstream is actually SSE
     const contentType = response.headers.get("content-type") || "";
     if (
-      streamingRequested &&
-      contentType.includes("text/event-stream") &&
+      (streamingRequested || contentType.includes("text/event-stream")) &&
       response.body
     ) {
       return {

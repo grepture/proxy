@@ -7,6 +7,7 @@ import { anthropicMiddleware } from "./proxy/anthropic-middleware";
 import { cursorMiddleware } from "./proxy/cursor-middleware";
 import { scanHandler, accountHandler } from "./scan/handler";
 import { scanFilesHandler } from "./scan/files-handler";
+import { traceHandler } from "./proxy/trace-handler";
 import { getProviders } from "./providers";
 import { registerBuiltinActions } from "./actions/builtin";
 
@@ -46,6 +47,7 @@ app.get("/health", (c) => c.json({ status: "ok" }));
 app.post("/v1/scan", scanHandler);
 app.post("/v1/scan-files", scanFilesHandler);
 app.get("/v1/account", accountHandler);
+app.post("/v1/trace", traceHandler);
 
 app.get("/v1/prompts", async (c) => {
   const authHeader = c.req.header("authorization") || "";

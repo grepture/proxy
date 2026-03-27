@@ -122,6 +122,13 @@ export async function proxyHandler(c: Context): Promise<Response> {
   // --- Extract label (optional, per-request identifier within a trace) ---
   const label = c.req.header("x-grepture-label") || null;
 
+  // --- Extract metadata (optional, arbitrary key-value tags) ---
+  const metadataHeader = c.req.header("x-grepture-metadata");
+  let metadata: Record<string, string> | null = null;
+  if (metadataHeader) {
+    try { metadata = JSON.parse(metadataHeader); } catch { /* invalid JSON, ignore */ }
+  }
+
   // --- Extract session ID (optional, for dev session grouping) ---
   const sessionId = c.req.header("x-grepture-session-id") || null;
 
@@ -142,6 +149,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     startedAt,
     traceId,
     label,
+    metadata,
     sessionId,
   };
 
@@ -500,6 +508,7 @@ function logTraffic(
     original_request_body: zeroData ? null : (origDiffers ? originalBody!.slice(0, 50_000) : null),
     trace_id: ctx.traceId,
     label: ctx.label,
+    metadata: ctx.metadata,
     session_id: ctx.sessionId,
     prompt_id: promptId ?? null,
     prompt_version: promptVersion ?? null,

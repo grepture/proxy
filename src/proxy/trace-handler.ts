@@ -15,6 +15,7 @@ type TraceEntry = {
   completion_tokens: number | null;
   total_tokens: number | null;
   trace_id: string | null;
+  label: string | null;
   streaming: boolean;
 };
 
@@ -63,6 +64,7 @@ export async function traceHandler(c: Context): Promise<Response> {
       model: entry.model ?? null,
       provider: entry.provider ?? null,
       trace_id: entry.trace_id ?? null,
+      label: entry.label ?? null,
       source: "trace",
     };
 

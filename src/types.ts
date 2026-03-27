@@ -173,6 +173,7 @@ export type TrafficLogEntry = {
   provider?: string | null;
   original_request_body?: string | null;
   trace_id?: string | null;
+  label?: string | null;
   session_id?: string | null;
   prompt_id?: string | null;
   prompt_version?: number | null;
@@ -243,6 +244,7 @@ export type RequestContext = {
   parsedBody: unknown;
   startedAt: number;
   traceId: string | null;
+  label: string | null;
   sessionId: string | null;
 };
 

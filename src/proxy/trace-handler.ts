@@ -17,6 +17,7 @@ type TraceEntry = {
   trace_id: string | null;
   label: string | null;
   metadata: Record<string, string> | null;
+  seq: number | null;
   streaming: boolean;
 };
 
@@ -67,6 +68,7 @@ export async function traceHandler(c: Context): Promise<Response> {
       trace_id: entry.trace_id ?? null,
       label: entry.label ?? null,
       metadata: zeroData ? null : (entry.metadata ?? null),
+      seq: entry.seq ?? null,
       source: "trace",
     };
 

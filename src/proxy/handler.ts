@@ -129,6 +129,10 @@ export async function proxyHandler(c: Context): Promise<Response> {
     try { metadata = JSON.parse(metadataHeader); } catch { /* invalid JSON, ignore */ }
   }
 
+  // --- Extract sequence number (optional, for ordering within a trace) ---
+  const seqHeader = c.req.header("x-grepture-seq");
+  const seq = seqHeader ? parseInt(seqHeader, 10) : null;
+
   // --- Extract session ID (optional, for dev session grouping) ---
   const sessionId = c.req.header("x-grepture-session-id") || null;
 
@@ -150,6 +154,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     traceId,
     label,
     metadata,
+    seq,
     sessionId,
   };
 
@@ -509,6 +514,7 @@ function logTraffic(
     trace_id: ctx.traceId,
     label: ctx.label,
     metadata: ctx.metadata,
+    seq: ctx.seq,
     session_id: ctx.sessionId,
     prompt_id: promptId ?? null,
     prompt_version: promptVersion ?? null,

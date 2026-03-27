@@ -175,6 +175,7 @@ export type TrafficLogEntry = {
   trace_id?: string | null;
   label?: string | null;
   metadata?: Record<string, string> | null;
+  seq?: number | null;
   session_id?: string | null;
   prompt_id?: string | null;
   prompt_version?: number | null;
@@ -247,6 +248,7 @@ export type RequestContext = {
   traceId: string | null;
   label: string | null;
   metadata: Record<string, string> | null;
+  seq: number | null;
   sessionId: string | null;
 };
 

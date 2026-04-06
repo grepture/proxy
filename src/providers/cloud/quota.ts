@@ -3,8 +3,8 @@ import type { QuotaChecker } from "../types";
 
 const REQUEST_LIMITS: Record<string, number> = {
   free: 1_000,
-  pro: 50_000,
-  business: 1_000_000,
+  pro: Infinity,
+  business: Infinity,
   custom: Infinity,
 };
 

@@ -32,7 +32,7 @@ export function extractUsage(
   }
 }
 
-function detectProvider(
+export function detectProvider(
   targetUrl: string,
 ): "openai" | "anthropic" | "gemini" | null {
   try {

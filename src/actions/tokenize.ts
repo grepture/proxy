@@ -2,7 +2,7 @@ import type { TokenVault } from "../providers/types";
 import type { TokenizeAction, RequestContext, ActionResult } from "../types";
 
 /** Simple dot-notation JSON path walker. Handles `user.email`, `items[0].name`, strips `$.` prefix. */
-function getByPath(obj: unknown, path: string): unknown {
+export function getByPath(obj: unknown, path: string): unknown {
   const cleaned = path.startsWith("$.") ? path.slice(2) : path;
   const segments = cleaned.split(/\.|\[(\d+)\]/).filter(Boolean);
 
@@ -18,7 +18,7 @@ function getByPath(obj: unknown, path: string): unknown {
   return current;
 }
 
-function setByPath(obj: unknown, path: string, value: unknown): void {
+export function setByPath(obj: unknown, path: string, value: unknown): void {
   const cleaned = path.startsWith("$.") ? path.slice(2) : path;
   const segments = cleaned.split(/\.|\[(\d+)\]/).filter(Boolean);
 

@@ -5,7 +5,8 @@ import { filterRules } from "../rules/filter";
 import { matchRules } from "../rules/matcher";
 import { runPipeline, type PipelineResult } from "../actions/pipeline";
 import { forwardRequest, type ForwardResult } from "./forward";
-import { extractUsage, type UsageInfo } from "./usage";
+import { forwardWithFallback } from "./forward-with-fallback";
+import { extractUsage, detectProvider, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
 import { createDetokenizeStream } from "./detokenize-stream";
 import { createResponsesToChatStream } from "./responses-to-chat-stream";
@@ -63,6 +64,18 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
   const rulesPromise = providers.rules.loadRules(auth.team_id);
 
+  // Provider key resolution: only fetch if the caller didn't supply one explicitly.
+  // The user-supplied X-Grepture-Auth-Forward header always wins.
+  // We resolve the entire fallback chain so the forward step can retry on 5xx.
+  const callerSuppliedAuthForward = c.req.header("x-grepture-auth-forward");
+  const detectedProvider = callerSuppliedAuthForward ? null : detectProvider(targetUrl);
+  const providerKeyChainPromise = detectedProvider
+    ? providers.providerKeys.resolveChain(auth.team_id, detectedProvider).catch((err: unknown) => {
+        console.error("Provider key chain resolve error:", err);
+        return [] as Awaited<ReturnType<typeof providers.providerKeys.resolveChain>>;
+      })
+    : Promise.resolve([] as Awaited<ReturnType<typeof providers.providerKeys.resolveChain>>);
+
   const injectedBody = c.get("injectedBody" as never) as string | undefined;
   const bodyPromise = injectedBody
     ? Promise.resolve((() => {
@@ -80,8 +93,12 @@ export async function proxyHandler(c: Context): Promise<Response> {
         return { error: null, body, parsedBody };
       }).catch(() => ({ error: null, body: "", parsedBody: null as unknown }));
 
-  // Rate+quota and body can resolve independently; rules may throw (handled in try below)
-  const [rateQuota, bodyResult] = await Promise.all([rateQuotaPromise, bodyPromise]);
+  // Rate+quota, body, and provider key chain can resolve independently; rules may throw (handled in try below)
+  const [rateQuota, bodyResult, providerKeyChain] = await Promise.all([
+    rateQuotaPromise,
+    bodyPromise,
+    providerKeyChainPromise,
+  ]);
 
   // --- Check rate limit result ---
   if (rateQuota) {
@@ -158,6 +175,27 @@ export async function proxyHandler(c: Context): Promise<Response> {
     sessionId,
   };
 
+  // --- Inject stored provider key if no header was supplied ---
+  // We inject the primary key (first in chain) here for rules/pipeline access. The
+  // forward step uses the full chain via forwardWithFallback for automatic failover.
+  // The invariant for x-grepture-auth-forward is `Bearer <key>` (forward.ts strips
+  // the prefix for Anthropic's x-api-key header).
+  if (!callerSuppliedAuthForward) {
+    if (providerKeyChain.length > 0) {
+      ctx.headers["x-grepture-auth-forward"] = `Bearer ${providerKeyChain[0].decrypted}`;
+    } else if (detectedProvider) {
+      // We could detect the provider but no key is stored — caller must supply one
+      return c.json(
+        {
+          error: `No ${detectedProvider} provider key found. Pass X-Grepture-Auth-Forward header or save a key in Settings.`,
+        },
+        401,
+      );
+    }
+    // If detectedProvider is null (unknown target), fall through — request will likely
+    // fail upstream unless the target accepts unauthenticated requests.
+  }
+
   // --- Prompt resolution (before rules) ---
   let skipRules = false;
   let resolvedPromptId: string | null = null;
@@ -207,6 +245,9 @@ export async function proxyHandler(c: Context): Promise<Response> {
   let allTags: Array<{ severity: string; label: string }> = [];
   let logRedactCategories: PiiCategory[] = [];
   let aiSampling: { used: number; limit: number } | undefined;
+  // The actual provider key used for the upstream call (may differ from primary on fallback).
+  // Default to the primary key if we have a chain — overridden by forwardWithFallback's result.
+  let providerKeyIdUsed: string | null = providerKeyChain[0]?.id ?? null;
 
   try {
     // Await rules (already started in parallel above)
@@ -224,11 +265,22 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
       if (inputResult.blocked) {
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, inputResult.statusCode || 403, duration, inputRulesApplied, "", {}, null, body, resolvedPromptId, resolvedPromptVersion);
+        logTraffic(providers.log, ctx, inputResult.statusCode || 403, duration, inputRulesApplied, "", {}, null, body, resolvedPromptId, resolvedPromptVersion, providerKeyIdUsed);
         return c.json(
           { error: inputResult.message || "Request blocked" },
           (inputResult.statusCode || 403) as ContentfulStatusCode,
         );
+      }
+    }
+
+    // Inject stream_options for OpenAI streaming so usage data appears in the
+    // final SSE chunk. Without this, extractUsage finds nothing and tokens log as 0.
+    if (streamingRequested && detectProvider(ctx.targetUrl) === "openai") {
+      const parsed = ctx.parsedBody as Record<string, unknown> | null;
+      if (parsed && !parsed.stream_options) {
+        parsed.stream_options = { include_usage: true };
+        ctx.parsedBody = parsed;
+        ctx.body = JSON.stringify(parsed);
       }
     }
 
@@ -240,7 +292,15 @@ export async function proxyHandler(c: Context): Promise<Response> {
         .concat([60_000]),
     );
 
-    forwardResult = await forwardRequest(ctx, timeoutMs, streamingRequested);
+    // Use forwardWithFallback when we have a stored key chain (enables automatic
+    // failover on 5xx). When the caller supplied their own key, use the simple path.
+    if (!callerSuppliedAuthForward && providerKeyChain.length > 0) {
+      const fallbackResult = await forwardWithFallback(ctx, providerKeyChain, timeoutMs, streamingRequested);
+      providerKeyIdUsed = fallbackResult.keyIdUsed;
+      forwardResult = fallbackResult;
+    } else {
+      forwardResult = await forwardRequest(ctx, timeoutMs, streamingRequested);
+    }
     logRedactCategories = collectMaskRestoreCategories(allRules);
 
     // --- Streaming path ---
@@ -279,7 +339,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         const logBody = await redactForLog(fullBody, logRedactCategories);
         const usage = extractUsage(fullBody, ctx.targetUrl);
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage, body, resolvedPromptId, resolvedPromptVersion);
+        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage, body, resolvedPromptId, resolvedPromptVersion, providerKeyIdUsed);
       }).catch((err) => {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
@@ -336,7 +396,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         60_000,
       );
     } else {
-      logTraffic(providers.log, ctx, 502, duration, inputRulesApplied, "", {}, null, body, resolvedPromptId, resolvedPromptVersion);
+      logTraffic(providers.log, ctx, 502, duration, inputRulesApplied, "", {}, null, body, resolvedPromptId, resolvedPromptVersion, providerKeyIdUsed);
       return c.json({ error: "Proxy processing error" }, 502);
     }
   }
@@ -358,6 +418,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     body,
     resolvedPromptId,
     resolvedPromptVersion,
+    providerKeyIdUsed,
   );
 
   // --- Return response ---
@@ -487,6 +548,7 @@ function logTraffic(
   originalBody?: string,
   promptId?: string | null,
   promptVersion?: number | null,
+  providerKeyId?: string | null,
 ): void {
   const zeroData = ctx.auth.zero_data_mode;
 
@@ -518,6 +580,7 @@ function logTraffic(
     session_id: ctx.sessionId,
     prompt_id: promptId ?? null,
     prompt_version: promptVersion ?? null,
+    provider_key_id: providerKeyId ?? null,
   };
 
   log.push(entry);

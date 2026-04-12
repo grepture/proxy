@@ -41,3 +41,24 @@ export interface RateQuotaChecker {
   }>;
   checkAiSampling(teamId: string, tier: string): Promise<{ allowed: boolean; used: number; limit: number }>;
 }
+
+/** A provider key after decryption — plaintext only lives in process memory. */
+export interface ResolvedProviderKey {
+  id: string;
+  provider: string;
+  decrypted: string;
+  default_model: string | null;
+  fallback_key_id: string | null;
+}
+
+export interface ProviderKeyResolver {
+  /** Resolve a team's primary key for a given provider. */
+  resolve(teamId: string, provider: string): Promise<ResolvedProviderKey | null>;
+  /** Resolve a key by its ID — used to follow the fallback chain. */
+  resolveById(keyId: string): Promise<ResolvedProviderKey | null>;
+  /**
+   * Resolve the full fallback chain starting from the team's primary key for a provider.
+   * Returns the chain in order [primary, fallback1, fallback2, ...]. Stops at maxHops.
+   */
+  resolveChain(teamId: string, provider: string, maxHops?: number): Promise<ResolvedProviderKey[]>;
+}

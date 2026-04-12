@@ -1,5 +1,5 @@
 import { config } from "../config";
-import type { AuthProvider, RuleProvider, LogWriter, TokenVault, RateLimiter, QuotaChecker, RateQuotaChecker } from "./types";
+import type { AuthProvider, RuleProvider, LogWriter, TokenVault, RateLimiter, QuotaChecker, RateQuotaChecker, ProviderKeyResolver } from "./types";
 
 export type Providers = {
   auth: AuthProvider;
@@ -9,9 +9,20 @@ export type Providers = {
   rateLimiter: RateLimiter;
   quota: QuotaChecker;
   rateQuota: RateQuotaChecker;
+  providerKeys: ProviderKeyResolver;
 };
 
 let _providers: Providers | null = null;
+
+/** Inject providers for testing. Bypasses the mode-based factory. */
+export function setProviders(p: Providers): void {
+  _providers = p;
+}
+
+/** Reset to force re-initialization on next getProviders() call. */
+export function resetProviders(): void {
+  _providers = null;
+}
 
 export function getProviders(): Providers {
   if (_providers) return _providers;
@@ -25,6 +36,7 @@ export function getProviders(): Providers {
     const { CloudRateLimiter } = require("./cloud/rate-limit");
     const { CloudQuotaChecker } = require("./cloud/quota");
     const { CloudRateQuotaChecker } = require("./cloud/rate-quota");
+    const { CloudProviderKeyResolver } = require("./cloud/provider-keys");
 
     _providers = {
       auth: new CloudAuthProvider(),
@@ -34,6 +46,7 @@ export function getProviders(): Providers {
       rateLimiter: new CloudRateLimiter(),
       quota: new CloudQuotaChecker(),
       rateQuota: new CloudRateQuotaChecker(),
+      providerKeys: new CloudProviderKeyResolver(),
     };
   } else {
     const { LocalAuthProvider } = require("./local/auth");
@@ -43,6 +56,7 @@ export function getProviders(): Providers {
     const { LocalRateLimiter } = require("./local/rate-limit");
     const { LocalQuotaChecker } = require("./local/quota");
     const { LocalRateQuotaChecker } = require("./local/rate-quota");
+    const { LocalProviderKeyResolver } = require("./local/provider-keys");
 
     _providers = {
       auth: new LocalAuthProvider(),
@@ -52,6 +66,7 @@ export function getProviders(): Providers {
       rateLimiter: new LocalRateLimiter(),
       quota: new LocalQuotaChecker(),
       rateQuota: new LocalRateQuotaChecker(),
+      providerKeys: new LocalProviderKeyResolver(),
     };
   }
 

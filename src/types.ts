@@ -179,6 +179,7 @@ export type TrafficLogEntry = {
   session_id?: string | null;
   prompt_id?: string | null;
   prompt_version?: number | null;
+  provider_key_id?: string | null;
   source?: "proxy" | "trace";
   created_at?: string;
 };

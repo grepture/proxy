@@ -19,6 +19,7 @@ export const config = {
   supabaseServiceRoleKey: requiredInCloud("SUPABASE_SERVICE_ROLE_KEY"),
   upstashRedisUrl: requiredInCloud("UPSTASH_REDIS_URL"),
   upstashRedisToken: requiredInCloud("UPSTASH_REDIS_TOKEN"),
+  encryptionKey: requiredInCloud("GREPTURE_ENCRYPTION_KEY"),
   plugins: process.env.GREPTURE_PLUGINS ? process.env.GREPTURE_PLUGINS.split(",").map((p) => p.trim()) : [],
   anthropicTarget: process.env.GREPTURE_ANTHROPIC_TARGET || "https://api.anthropic.com",
   openaiTarget: process.env.GREPTURE_OPENAI_TARGET || "https://api.openai.com",

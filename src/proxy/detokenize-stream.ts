@@ -1,6 +1,47 @@
 import type { TokenVault } from "../providers/types";
 import { detokenize } from "../actions/tokenize";
 
+/** Extract text content from an SSE event's data payload (Anthropic + OpenAI) */
+export function extractText(eventBlock: string): string | null {
+  for (const line of eventBlock.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const payload = line.slice(6).trim();
+    if (payload === "[DONE]") return null;
+    try {
+      const json = JSON.parse(payload);
+      if (json.delta?.text !== undefined) return json.delta.text;
+      const content = json.choices?.[0]?.delta?.content;
+      if (content !== undefined) return content;
+    } catch {
+      // Not parseable
+    }
+  }
+  return null;
+}
+
+/** Check if accumulated text ends with a potential partial token */
+export function endsWithPartialToken(
+  text: string,
+  tokenPrefixes: string[],
+  maxTokenLen: number,
+): boolean {
+  if (!text) return false;
+  for (const prefix of tokenPrefixes) {
+    // Ends with partial prefix? (e.g. "p", "pi", "pii" for prefix "pii_")
+    for (let i = 1; i <= prefix.length && i <= text.length; i++) {
+      if (text.endsWith(prefix.slice(0, i))) return true;
+    }
+    // Ends with full prefix + partial UUID?
+    for (let len = prefix.length + 1; len <= maxTokenLen && len <= text.length; len++) {
+      const tail = text.slice(-len);
+      if (tail.startsWith(prefix) && /^[0-9a-f-]*$/.test(tail.slice(prefix.length))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Creates a TransformStream that detokenizes tokens in a streamed SSE response.
  *
@@ -60,24 +101,6 @@ export function createDetokenizeStream(
   let pendingText = ""; // Accumulated text content from held events
   let heldEvents: string[] = []; // SSE events being held
 
-  /** Extract text content from an SSE event's data payload (Anthropic + OpenAI) */
-  function extractText(eventBlock: string): string | null {
-    for (const line of eventBlock.split("\n")) {
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6).trim();
-      if (payload === "[DONE]") return null;
-      try {
-        const json = JSON.parse(payload);
-        if (json.delta?.text !== undefined) return json.delta.text;
-        const content = json.choices?.[0]?.delta?.content;
-        if (content !== undefined) return content;
-      } catch {
-        // Not parseable
-      }
-    }
-    return null;
-  }
-
   /** Replace text content in an SSE event's JSON payload */
   function replaceTextInEvent(eventBlock: string, newText: string): string {
     const lines = eventBlock.split("\n");
@@ -99,25 +122,6 @@ export function createDetokenizeStream(
       }
     }
     return eventBlock;
-  }
-
-  /** Check if accumulated text ends with a potential partial token */
-  function endsWithPartialToken(text: string): boolean {
-    if (!text) return false;
-    for (const prefix of tokenPrefixes) {
-      // Ends with partial prefix? (e.g. "p", "pi", "pii" for prefix "pii_")
-      for (let i = 1; i <= prefix.length && i <= text.length; i++) {
-        if (text.endsWith(prefix.slice(0, i))) return true;
-      }
-      // Ends with full prefix + partial UUID?
-      for (let len = prefix.length + 1; len <= maxTokenLen && len <= text.length; len++) {
-        const tail = text.slice(-len);
-        if (tail.startsWith(prefix) && /^[0-9a-f-]*$/.test(tail.slice(prefix.length))) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   function emit(controller: TransformStreamDefaultController<Uint8Array>, eventBlock: string) {
@@ -193,7 +197,7 @@ export function createDetokenizeStream(
             await flushHeld(controller);
           } else if (heldEvents.length >= MAX_HELD) {
             await flushHeld(controller);
-          } else if (!endsWithPartialToken(pendingText)) {
+          } else if (!endsWithPartialToken(pendingText, tokenPrefixes, maxTokenLen)) {
             await flushHeld(controller);
           }
           // else: partial token at end — keep holding

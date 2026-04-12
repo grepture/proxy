@@ -25,6 +25,7 @@
     "start": "bun run src/index.ts",
     "start:cloud": "GREPTURE_MODE=cloud GREPTURE_PLUGINS=./plugins/pro-actions/src/index.ts bun run src/index.ts",
     "build:oss": "bun run scripts/build-oss.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "pm2": "pm2 start --interpreter bun src/index.ts --name grepture-proxy",
     "pm2:stop": "pm2 stop grepture-proxy",

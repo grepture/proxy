@@ -14,10 +14,14 @@ export async function forwardRequest(
 
   for (const [key, value] of Object.entries(ctx.headers)) {
     const lower = key.toLowerCase();
-    // Strip Grepture auth and internal headers
+    // Strip Grepture auth, internal headers, and browser-context headers
+    // (the proxy is a server — upstream providers shouldn't see browser origin)
     if (lower === "authorization") continue;
     if (lower.startsWith("x-grepture-")) continue;
     if (lower === "host") continue;
+    if (lower === "content-length") continue; // recalculated by fetch from actual body
+    if (lower === "origin" || lower === "referer") continue;
+    if (lower.startsWith("sec-")) continue;
     outboundHeaders[key] = value;
   }
 
@@ -28,6 +32,10 @@ export async function forwardRequest(
     if (host.includes("anthropic.com")) {
       // Anthropic uses x-api-key header; strip Bearer prefix if present
       outboundHeaders["x-api-key"] = authForward.replace(/^Bearer\s+/i, "");
+      // Anthropic requires this header on every request
+      if (!outboundHeaders["anthropic-version"]) {
+        outboundHeaders["anthropic-version"] = "2023-06-01";
+      }
     } else {
       outboundHeaders["authorization"] = authForward;
     }
@@ -59,12 +67,15 @@ export async function forwardRequest(
       responseHeaders[key] = value;
     });
 
-    // Streaming mode: return raw stream if upstream is actually SSE
+    // Streaming mode: only when the upstream actually returned a successful
+    // streamable response. Error responses (4xx/5xx) always go through the
+    // buffered path even if the caller asked for streaming, so that
+    // forwardWithFallback can retry them on the next key in the chain.
     const contentType = response.headers.get("content-type") || "";
-    if (
-      (streamingRequested || contentType.includes("text/event-stream")) &&
-      response.body
-    ) {
+    const isSse = contentType.includes("text/event-stream");
+    const isSuccessfulStreamRequest =
+      streamingRequested && response.status >= 200 && response.status < 300;
+    if ((isSse || isSuccessfulStreamRequest) && response.body) {
       return {
         mode: "streaming",
         status: response.status,

@@ -184,6 +184,33 @@ export type TrafficLogEntry = {
   created_at?: string;
 };
 
+// Row inserted into `tool_calls` when the proxy sees an assistant response
+// emit a tool_use block. `status` starts as 'pending' and is updated by
+// link_tool_call_results when the matching tool_result arrives.
+export type ToolCallInsertRow = {
+  id?: string;
+  team_id: string;
+  user_id: string;
+  traffic_log_id: string;
+  session_id: string | null;
+  trace_id: string | null;
+  provider_tool_call_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  arguments_hash: string;
+  status: "pending";
+  model: string | null;
+  provider: string | null;
+};
+
+// One link entry passed to link_tool_call_results.
+export type ToolCallLink = {
+  provider_tool_call_id: string;
+  result: unknown;
+  is_error: boolean;
+  result_traffic_log_id: string;
+};
+
 export type ApiSettings = {
   id: string;
   user_id: string;

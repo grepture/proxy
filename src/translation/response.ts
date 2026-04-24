@@ -2,6 +2,272 @@ import { TranslationNotSupportedError, type Format } from "./types";
 
 type AnyRecord = Record<string, unknown>;
 
+export type ExtractedToolUse = {
+  id: string;
+  name: string;
+  input: AnyRecord;
+  /** Which shape produced this — useful for setting the `provider` column. */
+  shape: "anthropic" | "openai_chat" | "openai_responses" | "openai_stream" | "anthropic_stream";
+};
+
+function providerFromShape(shape: ExtractedToolUse["shape"]): "openai" | "anthropic" {
+  return shape === "anthropic" || shape === "anthropic_stream" ? "anthropic" : "openai";
+}
+
+export function providerForRow(uses: ExtractedToolUse[]): "openai" | "anthropic" | null {
+  if (uses.length === 0) return null;
+  return providerFromShape(uses[0].shape);
+}
+
+function safeJsonParseObj(raw: unknown): AnyRecord {
+  if (typeof raw !== "string") return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? (v as AnyRecord) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Extract tool_use calls from an LLM response. Tries all known shapes
+ * (Anthropic messages, OpenAI Chat Completions, OpenAI Responses API, and
+ * SSE streams of either). The shape is detected from the parsed body; SSE
+ * is detected from the raw body text. Falls back to object-by-object
+ * scanning when the body is truncated (`response_body` is capped at 50KB
+ * in traffic_logs). Returns [] when no tool calls are present.
+ */
+export function extractToolUses(parsedBody: unknown, rawBody?: string | null): ExtractedToolUse[] {
+  // --- SSE stream path ---
+  if (typeof rawBody === "string" && rawBody.includes("data: ")) {
+    return extractToolUsesFromSSE(rawBody);
+  }
+
+  // --- Truncated-body fallback: scan for complete `{"type":"function_call", ...}`
+  // objects inside a partially-stored array. This recovers tool calls even
+  // when JSON.parse fails on the whole body. ---
+  if (!parsedBody && typeof rawBody === "string" && rawBody.includes("\"function_call\"")) {
+    const objects = scanJsonObjects(rawBody);
+    const out: ExtractedToolUse[] = [];
+    for (const obj of objects) {
+      if (obj.type !== "function_call") continue;
+      const id = typeof obj.call_id === "string" ? obj.call_id : (typeof obj.id === "string" ? obj.id : null);
+      if (!id || typeof obj.name !== "string") continue;
+      const input = typeof obj.arguments === "string"
+        ? safeJsonParseObj(obj.arguments)
+        : (obj.arguments && typeof obj.arguments === "object" ? (obj.arguments as AnyRecord) : {});
+      out.push({ id, name: obj.name, input, shape: "openai_responses" });
+    }
+    if (out.length > 0) return out;
+  }
+
+  if (!parsedBody || typeof parsedBody !== "object") return [];
+  const src = parsedBody as AnyRecord;
+
+  // --- Anthropic Messages: { role: "assistant", content: [{type: "tool_use", ...}] } ---
+  if (Array.isArray(src.content)) {
+    const blocks = src.content as AnyRecord[];
+    const out: ExtractedToolUse[] = [];
+    for (const b of blocks) {
+      if (b.type !== "tool_use") continue;
+      if (typeof b.id !== "string" || typeof b.name !== "string") continue;
+      out.push({
+        id: b.id,
+        name: b.name,
+        input: (b.input && typeof b.input === "object" ? (b.input as AnyRecord) : {}),
+        shape: "anthropic",
+      });
+    }
+    if (out.length > 0) return out;
+  }
+
+  // --- OpenAI Responses API: { output: [{type: "function_call", call_id, name, arguments}] } ---
+  if (Array.isArray(src.output)) {
+    const entries = src.output as AnyRecord[];
+    const out: ExtractedToolUse[] = [];
+    for (const e of entries) {
+      if (e.type !== "function_call") continue;
+      const id = typeof e.call_id === "string" ? e.call_id : (typeof e.id === "string" ? e.id : null);
+      if (!id || typeof e.name !== "string") continue;
+      const input = typeof e.arguments === "string"
+        ? safeJsonParseObj(e.arguments)
+        : (e.arguments && typeof e.arguments === "object" ? (e.arguments as AnyRecord) : {});
+      out.push({ id, name: e.name, input, shape: "openai_responses" });
+    }
+    if (out.length > 0) return out;
+  }
+
+  // --- OpenAI Chat Completions: { choices: [{message: {tool_calls: [...]}}] } ---
+  if (Array.isArray(src.choices)) {
+    const firstChoice = (src.choices as AnyRecord[])[0] ?? {};
+    const message = (firstChoice.message as AnyRecord | undefined) ?? {};
+    const toolCalls = Array.isArray(message.tool_calls) ? (message.tool_calls as AnyRecord[]) : [];
+    const out: ExtractedToolUse[] = [];
+    for (const tc of toolCalls) {
+      if (typeof tc.id !== "string") continue;
+      const fn = (tc.function as AnyRecord | undefined) ?? {};
+      if (typeof fn.name !== "string") continue;
+      out.push({
+        id: tc.id,
+        name: fn.name,
+        input: safeJsonParseObj(fn.arguments),
+        shape: "openai_chat",
+      });
+    }
+    if (out.length > 0) return out;
+  }
+
+  return [];
+}
+
+// ─── Truncation-tolerant JSON object scanner ──────────────────────────────
+//
+// Walks `body` character by character tracking brace depth so that
+// truncation mid-object doesn't prevent us from extracting earlier objects.
+// Mirrors the logic in app/.../prompt-inspector.tsx used by the trace viewer.
+
+function scanJsonObjects(body: string): AnyRecord[] {
+  const out: AnyRecord[] = [];
+  let i = 0;
+  while (i < body.length) {
+    const objStart = body.indexOf("{", i);
+    if (objStart === -1) break;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let objEnd = -1;
+
+    for (let j = objStart; j < body.length; j++) {
+      const ch = body[j];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) { objEnd = j; break; } }
+    }
+
+    if (objEnd === -1) {
+      // Outer object never balances (body truncated mid-object). Skip past
+      // this `{` and keep scanning — any balanced INNER objects (the array
+      // elements we actually care about) will still be found.
+      i = objStart + 1;
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(body.slice(objStart, objEnd + 1));
+      if (parsed && typeof parsed === "object") out.push(parsed as AnyRecord);
+    } catch { /* skip malformed */ }
+    i = objEnd + 1;
+  }
+  return out;
+}
+
+// ─── SSE stream extraction ─────────────────────────────────────────────────
+//
+// Mirrors `reassembleStream` in app/.../prompt-inspector.tsx so the live
+// streaming path and the backfill both find the same tool calls. OpenAI
+// streams Chat Completions deltas; Anthropic streams content_block_start /
+// content_block_delta events. Both accumulate arguments incrementally.
+
+function extractToolUsesFromSSE(sseText: string): ExtractedToolUse[] {
+  const oai = new Map<number, { id: string; name: string; args: string }>();
+  const ant = new Map<number, { id: string; name: string; args: string }>();
+  // Responses API streaming uses output_item.added / response.function_call_arguments.delta
+  const resp = new Map<string, { id: string; name: string; args: string }>();
+
+  for (const line of sseText.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const payload = line.slice(6).trim();
+    if (!payload || payload === "[DONE]") continue;
+    let data: AnyRecord;
+    try {
+      data = JSON.parse(payload.replace(/\[[\w_]+_REDACTED\]/g, '"[redacted]"')) as AnyRecord;
+    } catch { continue; }
+
+    // OpenAI Chat Completions streaming
+    const choices = Array.isArray(data.choices) ? (data.choices as AnyRecord[]) : null;
+    if (choices) {
+      const delta = (choices[0]?.delta as AnyRecord | undefined) ?? null;
+      if (delta && Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls as AnyRecord[]) {
+          const idx = typeof tc.index === "number" ? tc.index : 0;
+          const existing = oai.get(idx);
+          const fn = (tc.function as AnyRecord | undefined) ?? {};
+          if (!existing) {
+            oai.set(idx, {
+              id: typeof tc.id === "string" ? tc.id : "",
+              name: typeof fn.name === "string" ? fn.name : "",
+              args: typeof fn.arguments === "string" ? fn.arguments : "",
+            });
+          } else {
+            if (typeof tc.id === "string" && tc.id) existing.id = tc.id;
+            if (typeof fn.name === "string" && fn.name) existing.name = fn.name;
+            if (typeof fn.arguments === "string") existing.args += fn.arguments;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Anthropic streaming
+    if (data.type === "content_block_start") {
+      const cb = data.content_block as AnyRecord | undefined;
+      if (cb && cb.type === "tool_use") {
+        const idx = typeof data.index === "number" ? data.index : ant.size;
+        ant.set(idx, {
+          id: typeof cb.id === "string" ? cb.id : "",
+          name: typeof cb.name === "string" ? cb.name : "",
+          args: "",
+        });
+      }
+    } else if (data.type === "content_block_delta") {
+      const delta = data.delta as AnyRecord | undefined;
+      if (delta && delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const idx = typeof data.index === "number" ? data.index : 0;
+        const existing = ant.get(idx);
+        if (existing) existing.args += delta.partial_json;
+      }
+    }
+
+    // OpenAI Responses API streaming
+    else if (data.type === "response.output_item.added") {
+      const item = data.item as AnyRecord | undefined;
+      if (item && item.type === "function_call") {
+        const key = typeof item.id === "string" ? item.id : `idx_${resp.size}`;
+        resp.set(key, {
+          id: typeof item.call_id === "string" ? item.call_id : (typeof item.id === "string" ? item.id : ""),
+          name: typeof item.name === "string" ? item.name : "",
+          args: typeof item.arguments === "string" ? item.arguments : "",
+        });
+      }
+    } else if (data.type === "response.function_call_arguments.delta") {
+      const key = typeof data.item_id === "string" ? data.item_id : null;
+      if (key) {
+        const existing = resp.get(key);
+        if (existing && typeof data.delta === "string") existing.args += data.delta;
+      }
+    }
+  }
+
+  const out: ExtractedToolUse[] = [];
+  for (const [, v] of oai) {
+    if (!v.id || !v.name) continue;
+    out.push({ id: v.id, name: v.name, input: safeJsonParseObj(v.args), shape: "openai_stream" });
+  }
+  for (const [, v] of ant) {
+    if (!v.id || !v.name) continue;
+    out.push({ id: v.id, name: v.name, input: safeJsonParseObj(v.args), shape: "anthropic_stream" });
+  }
+  for (const [, v] of resp) {
+    if (!v.id || !v.name) continue;
+    out.push({ id: v.id, name: v.name, input: safeJsonParseObj(v.args), shape: "openai_stream" });
+  }
+  return out;
+}
+
 /**
  * Translate a non-streaming chat completion response from one provider format
  * to another. The caller's expected format becomes the target.

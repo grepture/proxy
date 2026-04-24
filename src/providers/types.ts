@@ -1,4 +1,4 @@
-import type { AuthInfo, Rule, TrafficLogEntry, RuleAction, RequestContext, ActionResult } from "../types";
+import type { AuthInfo, Rule, TrafficLogEntry, RuleAction, RequestContext, ActionResult, ToolCallInsertRow, ToolCallLink } from "../types";
 
 export interface ActionPlugin {
   type: string;
@@ -17,6 +17,16 @@ export interface RuleProvider {
 
 export interface LogWriter {
   push(entry: TrafficLogEntry): void;
+  flush(): Promise<void>;
+}
+
+export interface ToolCallWriter {
+  /** Enqueue a new tool_calls row to insert. */
+  pushInsert(row: ToolCallInsertRow): void;
+  /** Enqueue a link update for a tool_result received in a follow-up request.
+   * team_id is carried here (rather than on every link entry) because the
+   * link RPC scopes updates per team. */
+  pushLink(teamId: string, link: ToolCallLink): void;
   flush(): Promise<void>;
 }
 

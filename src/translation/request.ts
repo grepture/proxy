@@ -6,6 +6,119 @@ const DEFAULT_ANTHROPIC_MAX_TOKENS = 4096;
 
 type AnyRecord = Record<string, unknown>;
 
+export type ExtractedToolResult = {
+  /** Provider-assigned id of the tool_use being answered (matches ExtractedToolUse.id). */
+  tool_call_id: string;
+  /** Result payload — stringified text or a content-block array, as produced by the caller. */
+  result: unknown;
+  is_error: boolean;
+};
+
+// Local copy of the brace-depth scanner — same as scanJsonObjects in
+// translation/response.ts. Kept inline to avoid a circular import between
+// request.ts and response.ts.
+function scanJsonObjectsLocal(body: string): AnyRecord[] {
+  const out: AnyRecord[] = [];
+  let i = 0;
+  while (i < body.length) {
+    const objStart = body.indexOf("{", i);
+    if (objStart === -1) break;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let objEnd = -1;
+    for (let j = objStart; j < body.length; j++) {
+      const ch = body[j];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) { objEnd = j; break; } }
+    }
+    if (objEnd === -1) {
+      // Truncated outer object — skip past this `{` and keep scanning inner
+      // (balanced) objects.
+      i = objStart + 1;
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(body.slice(objStart, objEnd + 1));
+      if (parsed && typeof parsed === "object") out.push(parsed as AnyRecord);
+    } catch { /* skip malformed */ }
+    i = objEnd + 1;
+  }
+  return out;
+}
+
+/**
+ * Extract tool_result payloads from a request body. Auto-detects among:
+ *   - OpenAI Chat Completions: `messages[].role === "tool"` + `tool_call_id`
+ *   - Anthropic Messages: `messages[].role === "user"` + content block
+ *     with `type: "tool_result"` + `tool_use_id`
+ *   - OpenAI Responses API: `input[].type === "function_call_output"` + `call_id`
+ *
+ * Falls back to object-by-object scanning of the raw body when JSON.parse
+ * fails (request_body capped at 50KB in traffic_logs).
+ */
+export function extractToolResults(parsedBody: unknown, rawBody?: string | null): ExtractedToolResult[] {
+  // Truncated-body fallback — scan for function_call_output objects.
+  if (!parsedBody && typeof rawBody === "string" && rawBody.includes("\"function_call_output\"")) {
+    const out: ExtractedToolResult[] = [];
+    const objs = scanJsonObjectsLocal(rawBody);
+    for (const obj of objs) {
+      if (obj.type !== "function_call_output") continue;
+      const id = typeof obj.call_id === "string" ? obj.call_id : null;
+      if (!id) continue;
+      out.push({ tool_call_id: id, result: obj.output ?? null, is_error: false });
+    }
+    if (out.length > 0) return out;
+  }
+
+  if (!parsedBody || typeof parsedBody !== "object") return [];
+  const src = parsedBody as AnyRecord;
+  const out: ExtractedToolResult[] = [];
+
+  // OpenAI Responses API request shape
+  if (Array.isArray(src.input)) {
+    for (const e of src.input as AnyRecord[]) {
+      if (e.type !== "function_call_output") continue;
+      const id = typeof e.call_id === "string" ? e.call_id : null;
+      if (!id) continue;
+      out.push({ tool_call_id: id, result: e.output ?? null, is_error: false });
+    }
+    if (out.length > 0) return out;
+  }
+
+  const messages = Array.isArray(src.messages) ? (src.messages as AnyRecord[]) : [];
+  if (messages.length === 0) return out;
+
+  // OpenAI Chat Completions: role=tool messages
+  for (const m of messages) {
+    if (m.role !== "tool") continue;
+    const id = typeof m.tool_call_id === "string" ? m.tool_call_id : null;
+    if (!id) continue;
+    out.push({ tool_call_id: id, result: m.content, is_error: false });
+  }
+
+  // Anthropic: user messages carry tool_result content blocks
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    if (!Array.isArray(m.content)) continue;
+    for (const block of m.content as AnyRecord[]) {
+      if (block.type !== "tool_result") continue;
+      const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+      if (!id) continue;
+      out.push({
+        tool_call_id: id,
+        result: block.content,
+        is_error: block.is_error === true,
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Translate a chat completion request body from one provider format to another.
  * The `model` parameter overrides whatever is in the body — typically the

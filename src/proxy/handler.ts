@@ -16,6 +16,7 @@ import { replacePii } from "../pii/replacer";
 import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCategory, RedactPiiAction, AiDetectPiiAction, PromptMessage } from "../types";
 import { fetchPrompt } from "../prompts/cache";
 import { resolveMessages } from "../prompts/resolver";
+import { handleToolCalls } from "./tool-calls-extract";
 
 export async function proxyHandler(c: Context): Promise<Response> {
   const startedAt = performance.now();
@@ -339,7 +340,10 @@ export async function proxyHandler(c: Context): Promise<Response> {
         const logBody = await redactForLog(fullBody, logRedactCategories);
         const usage = extractUsage(fullBody, ctx.targetUrl);
         const duration = performance.now() - startedAt;
-        logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage, body, resolvedPromptId, resolvedPromptVersion, providerKeyIdUsed);
+        const trafficLogId = logTraffic(providers.log, ctx, forwardResult.status, duration, inputRulesApplied, logBody, forwardResult.headers, usage, body, resolvedPromptId, resolvedPromptVersion, providerKeyIdUsed);
+        // Pass the raw SSE text so the stream reassembler can recover tool_use
+        // blocks emitted incrementally during the stream.
+        handleToolCalls(providers.toolCalls, ctx, trafficLogId, null, usage?.model ?? null, logBody);
       }).catch((err) => {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
@@ -406,7 +410,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
   const rawLogBody = forwardResult.mode === "buffered" ? forwardResult.body : "";
   const logBody = await redactForLog(rawLogBody, logRedactCategories);
   const usage = rawLogBody ? extractUsage(rawLogBody, ctx.targetUrl) : null;
-  logTraffic(
+  const trafficLogId = logTraffic(
     providers.log,
     ctx,
     forwardResult.status,
@@ -420,6 +424,11 @@ export async function proxyHandler(c: Context): Promise<Response> {
     resolvedPromptVersion,
     providerKeyIdUsed,
   );
+
+  // Extract tool_use / tool_result from the buffered exchange. Parse the
+  // (post-redaction) response body once; skip silently on malformed bodies.
+  const parsedResponse = rawLogBody ? tryParse(logBody) : null;
+  handleToolCalls(providers.toolCalls, ctx, trafficLogId, parsedResponse, usage?.model ?? null, logBody);
 
   // --- Return response ---
   const responseHeaders = new Headers();
@@ -549,13 +558,16 @@ function logTraffic(
   promptId?: string | null,
   promptVersion?: number | null,
   providerKeyId?: string | null,
-): void {
+): string {
   const zeroData = ctx.auth.zero_data_mode;
 
   // Only store original body if it differs from the (possibly mutated) request body
   const origDiffers = originalBody && originalBody !== ctx.body;
 
   const entry: TrafficLogEntry = {
+    // Pre-assign the id so downstream writers (tool_calls) can FK to it in
+    // the same flush cycle.
+    id: crypto.randomUUID(),
     user_id: ctx.auth.user_id,
     team_id: ctx.auth.team_id,
     method: ctx.method,
@@ -584,4 +596,5 @@ function logTraffic(
   };
 
   log.push(entry);
+  return entry.id!;
 }

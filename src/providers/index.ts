@@ -1,10 +1,11 @@
 import { config } from "../config";
-import type { AuthProvider, RuleProvider, LogWriter, TokenVault, RateLimiter, QuotaChecker, RateQuotaChecker, ProviderKeyResolver } from "./types";
+import type { AuthProvider, RuleProvider, LogWriter, ToolCallWriter, TokenVault, RateLimiter, QuotaChecker, RateQuotaChecker, ProviderKeyResolver } from "./types";
 
 export type Providers = {
   auth: AuthProvider;
   rules: RuleProvider;
   log: LogWriter;
+  toolCalls: ToolCallWriter;
   vault: TokenVault;
   rateLimiter: RateLimiter;
   quota: QuotaChecker;
@@ -32,6 +33,7 @@ export function getProviders(): Providers {
     const { CloudAuthProvider } = require("./cloud/auth");
     const { CloudRuleProvider } = require("./cloud/rules");
     const { CloudLogWriter } = require("./cloud/log");
+    const { CloudToolCallWriter } = require("./cloud/tool-calls");
     const { CloudTokenVault } = require("./cloud/vault");
     const { CloudRateLimiter } = require("./cloud/rate-limit");
     const { CloudQuotaChecker } = require("./cloud/quota");
@@ -42,6 +44,7 @@ export function getProviders(): Providers {
       auth: new CloudAuthProvider(),
       rules: new CloudRuleProvider(),
       log: new CloudLogWriter(),
+      toolCalls: new CloudToolCallWriter(),
       vault: new CloudTokenVault(),
       rateLimiter: new CloudRateLimiter(),
       quota: new CloudQuotaChecker(),
@@ -52,6 +55,7 @@ export function getProviders(): Providers {
     const { LocalAuthProvider } = require("./local/auth");
     const { LocalRuleProvider } = require("./local/rules");
     const { LocalLogWriter } = require("./local/log");
+    const { LocalToolCallWriter } = require("./local/tool-calls");
     const { LocalTokenVault } = require("./local/vault");
     const { LocalRateLimiter } = require("./local/rate-limit");
     const { LocalQuotaChecker } = require("./local/quota");
@@ -62,6 +66,7 @@ export function getProviders(): Providers {
       auth: new LocalAuthProvider(),
       rules: new LocalRuleProvider(),
       log: new LocalLogWriter(),
+      toolCalls: new LocalToolCallWriter(),
       vault: new LocalTokenVault(),
       rateLimiter: new LocalRateLimiter(),
       quota: new LocalQuotaChecker(),

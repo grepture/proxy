@@ -211,6 +211,26 @@ export type ToolCallLink = {
   result_traffic_log_id: string;
 };
 
+export type EmbeddingLogEntry = {
+  id?: string;
+  team_id: string;
+  trace_id?: string | null;
+  provider_key_id?: string | null;
+  byok: boolean;
+  model: string;
+  input_count: number;
+  total_chars: number;
+  dimensions?: number | null;
+  redaction_strategy: "placeholder" | "hash" | "mask";
+  redaction_categories: string[];
+  redaction_count: number;
+  redaction_source?: "regex" | "ai" | "both" | null;
+  blocked: boolean;
+  status_code: number;
+  tokens?: number | null;
+  duration_ms: number;
+};
+
 export type ApiSettings = {
   id: string;
   user_id: string;

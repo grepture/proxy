@@ -1,4 +1,4 @@
-import type { AuthInfo, Rule, TrafficLogEntry, RuleAction, RequestContext, ActionResult, ToolCallInsertRow, ToolCallLink } from "../types";
+import type { AuthInfo, Rule, TrafficLogEntry, EmbeddingLogEntry, RuleAction, RequestContext, ActionResult, ToolCallInsertRow, ToolCallLink } from "../types";
 
 export interface ActionPlugin {
   type: string;
@@ -17,6 +17,7 @@ export interface RuleProvider {
 
 export interface LogWriter {
   push(entry: TrafficLogEntry): void;
+  pushEmbedding(entry: EmbeddingLogEntry): void;
   flush(): Promise<void>;
 }
 

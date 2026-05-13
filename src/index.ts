@@ -4,6 +4,9 @@ import { cors } from "hono/cors";
 import { config } from "./config";
 import { proxyHandler } from "./proxy/handler";
 import { anthropicMiddleware } from "./proxy/anthropic-middleware";
+import { anthropicByokMiddleware } from "./proxy/anthropic-byok-middleware";
+import { openaiMiddleware } from "./proxy/openai-middleware";
+import { geminiMiddleware } from "./proxy/gemini-middleware";
 import { cursorMiddleware } from "./proxy/cursor-middleware";
 import { scanHandler, accountHandler } from "./scan/handler";
 import { scanFilesHandler } from "./scan/files-handler";
@@ -102,6 +105,9 @@ app.get("/v1/prompts/:slugRef", async (c) => {
 app.use("/claude/v1/messages", anthropicMiddleware);
 app.use("/claude/v1/messages/*", anthropicMiddleware);
 app.use("/cursor/:greptureKey/*", cursorMiddleware);
+app.use("/openai/:greptureKey/*", openaiMiddleware);
+app.use("/anthropic/:greptureKey/*", anthropicByokMiddleware);
+app.use("/gemini/:greptureKey/*", geminiMiddleware);
 app.all("/*", proxyHandler);
 
 // --- Start ---

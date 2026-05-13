@@ -1,9 +1,36 @@
 import { supabase } from "../../infra/supabase";
+import { buildHotBodyKey, r2Enabled, uploadHotBody } from "../../infra/r2";
 import type { LogWriter } from "../types";
 import type { TrafficLogEntry, EmbeddingLogEntry } from "../../types";
 
 const FLUSH_SIZE = 50;
 const FLUSH_INTERVAL_MS = 5_000;
+
+// Bodies up to this size are stored inline only — no R2. Matches the prior
+// inline body cap (50KB), so PG storage stays flat for typical chat traffic
+// and only the long tail (agents, RAG, big tool histories) hits R2.
+const INLINE_LIMIT = 50_000;
+
+// When a body is offloaded, this much of it is kept inline in Postgres as a
+// preview. Lets the detail-sheet's conversation view render immediately for
+// most rows; the full body is fetched from R2 in a second phase.
+const PREVIEW_SIZE = 5_000;
+
+// Hard ceiling on inline body storage when R2 is unavailable. Mirrors the
+// previous behavior — no row can balloon Postgres if R2 falls over.
+const FALLBACK_INLINE_LIMIT = 50_000;
+
+type BodyField = "request_body" | "response_body" | "original_request_body";
+type R2KeyField =
+  | "request_body_r2_key"
+  | "response_body_r2_key"
+  | "original_request_body_r2_key";
+
+const BODY_FIELDS: { body: BodyField; key: R2KeyField }[] = [
+  { body: "request_body", key: "request_body_r2_key" },
+  { body: "response_body", key: "response_body_r2_key" },
+  { body: "original_request_body", key: "original_request_body_r2_key" },
+];
 
 export class CloudLogWriter implements LogWriter {
   private buffer: TrafficLogEntry[] = [];
@@ -45,6 +72,8 @@ export class CloudLogWriter implements LogWriter {
     const batch = this.buffer;
     this.buffer = [];
 
+    await offloadLargeBodies(batch);
+
     try {
       const { error } = await supabase.from("traffic_logs").insert(batch);
       if (error) {
@@ -69,5 +98,57 @@ export class CloudLogWriter implements LogWriter {
     } catch (err) {
       console.error("Embedding log flush failed:", err);
     }
+  }
+}
+
+/**
+ * For every row in the batch, replace large bodies (> INLINE_LIMIT) with a
+ * short preview and upload the full body to R2 in parallel. On R2 failure,
+ * fall back to the legacy 50KB inline truncation so the row still lands.
+ *
+ * Runs entirely off the proxy hot path — `log.push()` returned immediately
+ * and the original request has already been responded to by the time this
+ * is called.
+ */
+async function offloadLargeBodies(batch: TrafficLogEntry[]): Promise<void> {
+  if (!r2Enabled()) {
+    // R2 not configured — preserve legacy behavior.
+    for (const row of batch) {
+      for (const { body } of BODY_FIELDS) {
+        const value = row[body];
+        if (typeof value === "string" && value.length > FALLBACK_INLINE_LIMIT) {
+          row[body] = value.slice(0, FALLBACK_INLINE_LIMIT);
+        }
+      }
+    }
+    return;
+  }
+
+  const uploads: Promise<void>[] = [];
+
+  for (const row of batch) {
+    if (!row.id || !row.team_id) continue;
+
+    for (const { body, key } of BODY_FIELDS) {
+      const value = row[body];
+      if (typeof value !== "string" || value.length <= INLINE_LIMIT) continue;
+
+      const r2Key = buildHotBodyKey(row.team_id, row.id, body);
+      uploads.push(
+        uploadHotBody(r2Key, value).then((ok) => {
+          if (ok) {
+            row[body] = value.slice(0, PREVIEW_SIZE);
+            row[key] = r2Key;
+          } else {
+            // R2 upload failed — fall back to inline truncation.
+            row[body] = value.slice(0, FALLBACK_INLINE_LIMIT);
+          }
+        }),
+      );
+    }
+  }
+
+  if (uploads.length > 0) {
+    await Promise.all(uploads);
   }
 }

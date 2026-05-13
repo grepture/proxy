@@ -172,6 +172,9 @@ export type TrafficLogEntry = {
   model?: string | null;
   provider?: string | null;
   original_request_body?: string | null;
+  request_body_r2_key?: string | null;
+  response_body_r2_key?: string | null;
+  original_request_body_r2_key?: string | null;
   trace_id?: string | null;
   label?: string | null;
   metadata?: Record<string, string> | null;

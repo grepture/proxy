@@ -37,6 +37,20 @@ The proxy will redact `john@example.com` before it reaches the API, based on you
 | `GREPTURE_RULES_FILE` | No | `rules.json` | Path to rules configuration file |
 | `GREPTURE_PLUGINS` | No | — | Comma-separated paths to plugin modules to load at startup |
 | `PORT` | No | `4001` | Port to listen on |
+| `R2_ENDPOINT` | No (cloud mode) | — | S3-compatible endpoint for body offload (e.g. `https://<account_id>.r2.cloudflarestorage.com`) |
+| `R2_ACCESS_KEY_ID` | No (cloud mode) | — | Access key with `Object Write` permission on the bucket |
+| `R2_SECRET_ACCESS_KEY` | No (cloud mode) | — | Secret key paired with `R2_ACCESS_KEY_ID` |
+| `R2_BUCKET` | No (cloud mode) | — | Bucket name where large bodies are stored |
+
+### Body Storage
+
+The proxy logs request and response bodies as part of its traffic log. For local-mode runs, bodies are written to `stdout` and there is no size limit beyond what fits in memory (default `10MB` per request).
+
+For cloud-mode runs that persist logs to a database, bodies are stored inline up to **50KB**. Anything larger is offloaded to S3-compatible object storage configured via the four `R2_*` variables above (any S3-compatible backend works — the name is historical). The full body is uploaded under `hot-bodies/<team_id>/<log_id>/<field>.json`, and a 5KB preview stays in the database alongside a pointer key for the offloaded object.
+
+- Offload happens during the log-batch flush, after the proxy has already responded to the client. It does **not** add latency to the request path.
+- If `R2_*` is not configured or the upload fails, bodies fall back to a 50KB inline truncation.
+- Bodies are encrypted in transit (HTTPS) and rely on the bucket's own access controls for encryption at rest.
 
 ## Rules
 

@@ -48,6 +48,40 @@ export function endsWithPartialToken(
 }
 
 /**
+ * Stricter check: does `text` end with an *incomplete* token still being built?
+ *
+ * Unlike endsWithPartialToken, this returns FALSE for a complete UUID at the
+ * end — because a complete token doesn't need more chars to resolve, and
+ * holding for it would only delay flush.
+ *
+ * This matters when pendingText contains BOTH a complete token (earlier) AND
+ * an incomplete one trailing. The old logic flushed eagerly on the complete
+ * one and abandoned the trailing partial, causing it to emit raw across two
+ * separate events. This function lets the caller keep holding instead.
+ */
+export function endsWithIncompleteToken(
+  text: string,
+  tokenPrefixes: string[],
+): boolean {
+  if (!text) return false;
+  const UUID_LEN = 36; // 8-4-4-4-12 + 4 dashes
+  for (const prefix of tokenPrefixes) {
+    // Trailing partial prefix ("p", "pi", "pii" for "pii_")
+    for (let i = 1; i < prefix.length && i <= text.length; i++) {
+      if (text.endsWith(prefix.slice(0, i))) return true;
+    }
+    // Trailing full prefix + < 36 chars of valid UUID material
+    const lastIdx = text.lastIndexOf(prefix);
+    if (lastIdx === -1) continue;
+    const after = text.slice(lastIdx + prefix.length);
+    if (after.length < UUID_LEN && /^[0-9a-f-]*$/.test(after)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Creates a TransformStream that detokenizes tokens in a streamed SSE response.
  *
  * LLMs output tokens character-by-character across many SSE events, so a simple
@@ -234,17 +268,23 @@ export function createDetokenizeStream(
           heldEvents.push(trimmed);
           if (text !== null) pendingText += text;
 
-          // Decide: flush or keep holding
-          const hasCompleteToken = tokenRegex.test(pendingText);
-
-          if (hasCompleteToken) {
+          // Decide: flush or keep holding.
+          //
+          // Hold as long as there's an *incomplete* trailing token that might
+          // still complete in a future delta — even if `pendingText` already
+          // contains earlier complete tokens. Flushing on the earlier complete
+          // one would abandon the trailing partial and emit it raw across the
+          // boundary.
+          //
+          // MAX_HELD is the safety valve: if the trailing run never resolves
+          // (e.g. model output just happens to look like a long token), we
+          // flush regardless to avoid unbounded holding.
+          if (heldEvents.length >= MAX_HELD) {
             await flushHeld(controller);
-          } else if (heldEvents.length >= MAX_HELD) {
-            await flushHeld(controller);
-          } else if (!endsWithPartialToken(pendingText, tokenPrefixes, maxTokenLen)) {
+          } else if (!endsWithIncompleteToken(pendingText, tokenPrefixes)) {
             await flushHeld(controller);
           }
-          // else: partial token at end — keep holding
+          // else: incomplete token at end — keep holding
         }
       } catch (err) {
         console.error("Detokenize stream error:", err);

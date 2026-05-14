@@ -307,6 +307,166 @@ describe("createDetokenizeStream", () => {
   });
 });
 
+describe("Anthropic streaming with split tokens (regression)", () => {
+  // TypingMind → Anthropic via /anthropic/<key>/v1/messages.
+  // Upstream Anthropic splits a long token across two content_block_delta
+  // events. The streaming detokenizer must hold the first event, merge with
+  // the second, and emit a single detokenized event.
+  it("detokenizes a token split across two Anthropic content_block_delta events", async () => {
+    const TOKEN_ANT = "pii_d1f00d3f-8687-484e-8b1d-04362fc2afc7";
+    const ORIGINAL_ANT = "California";
+    const TEAM_ANT = "team-1";
+
+    const vault: TokenVault = {
+      async set() {},
+      async get(_t, token) {
+        return token === TOKEN_ANT ? ORIGINAL_ANT : null;
+      },
+    };
+
+    // Split the token across two deltas at the same offset Anthropic split it
+    // in the reported case: 34 chars after prefix in the first delta, then "c7"
+    // appended in the second.
+    const head = TOKEN_ANT.slice(0, -2); // "pii_...04362fc2af"
+    const tail = TOKEN_ANT.slice(-2);    // "c7"
+
+    const delta3 =
+      `event: content_block_delta\n` +
+      `data: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `123 Newell Road, ${head}` },
+      })}`;
+
+    const delta4 =
+      `event: content_block_delta\n` +
+      `data: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `${tail}\n- Employer: ACME` },
+      })}`;
+
+    const stop = `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}`;
+
+    const upstream = chunkedStream([encodeSSE(delta3, delta4, stop)]);
+    const { stream } = createDetokenizeStream(upstream, TEAM_ANT, ["pii_"], vault);
+    const output = await collectStream(stream);
+
+    expect(output).not.toContain(TOKEN_ANT);
+    expect(output).not.toContain(head);
+    expect(output).toContain(ORIGINAL_ANT);
+  });
+
+  // Regression for the Anthropic case where TWO tokens are split across THREE
+  // consecutive deltas: token A ends in delta 1, completes in delta 2; then
+  // token B starts in delta 2 and completes in delta 3. The old logic flushed
+  // eagerly when delta 2 brought token A to completion, abandoning the trailing
+  // partial of token B and leaking both halves raw.
+  it("detokenizes two back-to-back split tokens across three deltas", async () => {
+    const TOKEN_A = "pii_321b0f89-7720-4d51-aa3c-f99489e06f05";
+    const TOKEN_B = "pii_f32c8210-ee86-44a6-be15-ed6187f40b53";
+    const ORIGINAL_A = "California";
+    const ORIGINAL_B = "Vizio Pharmaceutical";
+    const TEAM_ANT = "team-1";
+
+    const vault: TokenVault = {
+      async set() {},
+      async get(_t, token) {
+        if (token === TOKEN_A) return ORIGINAL_A;
+        if (token === TOKEN_B) return ORIGINAL_B;
+        return null;
+      },
+    };
+
+    // Mirror Anthropic's actual split boundaries from the reported trace.
+    // Token A: head ends in "aa3", tail starts with "c-f99489e06f05".
+    // Token B: head ends in "ee86-44a6", tail starts with "-be15-...".
+    const aHeadReal = TOKEN_A.slice(0, TOKEN_A.indexOf("c-"));
+    const aTailReal = TOKEN_A.slice(TOKEN_A.indexOf("c-"));
+    const bHeadReal = TOKEN_B.slice(0, TOKEN_B.indexOf("-be15"));
+    const bTailReal = TOKEN_B.slice(TOKEN_B.indexOf("-be15"));
+
+    const d1 =
+      `event: content_block_delta\ndata: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `Address: 123 ${aHeadReal}` },
+      })}`;
+    const d2 =
+      `event: content_block_delta\ndata: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `${aTailReal}\nEmployer: ${bHeadReal}` },
+      })}`;
+    const d3 =
+      `event: content_block_delta\ndata: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `${bTailReal}\nDone.` },
+      })}`;
+
+    const upstream = chunkedStream([encodeSSE(d1, d2, d3)]);
+    const { stream } = createDetokenizeStream(upstream, TEAM_ANT, ["pii_"], vault);
+    const output = await collectStream(stream);
+
+    // Neither raw token should leak anywhere
+    expect(output).not.toContain(TOKEN_A);
+    expect(output).not.toContain(TOKEN_B);
+    // No partial fragments either
+    expect(output).not.toContain(aHeadReal);
+    expect(output).not.toContain(bHeadReal);
+    // Both originals should appear
+    expect(output).toContain(ORIGINAL_A);
+    expect(output).toContain(ORIGINAL_B);
+  });
+
+  // Same as above but the two deltas arrive in *separate* network chunks —
+  // the transform's sseBuffer must carry state between transform() calls.
+  it("detokenizes a split token across separate network chunks", async () => {
+    const TOKEN_ANT = "pii_aabbccdd-eeff-0011-2233-445566778899";
+    const ORIGINAL_ANT = "California";
+    const TEAM_ANT = "team-1";
+
+    const vault: TokenVault = {
+      async set() {},
+      async get(_t, token) {
+        return token === TOKEN_ANT ? ORIGINAL_ANT : null;
+      },
+    };
+
+    const head = TOKEN_ANT.slice(0, -2);
+    const tail = TOKEN_ANT.slice(-2);
+
+    const delta3 =
+      `event: content_block_delta\n` +
+      `data: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `Address: ${head}` },
+      })}`;
+
+    const delta4 =
+      `event: content_block_delta\n` +
+      `data: ${JSON.stringify({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: `${tail}, done` },
+      })}`;
+
+    const upstream = chunkedStream([
+      encodeSSE(delta3),
+      encodeSSE(delta4),
+    ]);
+
+    const { stream } = createDetokenizeStream(upstream, TEAM_ANT, ["pii_"], vault);
+    const output = await collectStream(stream);
+
+    expect(output).not.toContain(TOKEN_ANT);
+    expect(output).not.toContain(head);
+    expect(output).toContain(ORIGINAL_ANT);
+  });
+});
+
 describe("extractText — Responses API", () => {
   it("extracts text from a response.output_text.delta event (delta as string)", () => {
     const event = `event: response.output_text.delta\ndata: ${JSON.stringify({

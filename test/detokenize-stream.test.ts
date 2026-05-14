@@ -248,6 +248,46 @@ describe("createDetokenizeStream", () => {
     expect(output).not.toContain(TOKEN);
   });
 
+  it("detokenizes tokens in response.output_text.done and response.completed terminal events", async () => {
+    // TypingMind reads the full text from the terminal events, not the deltas.
+    // If we only detokenize deltas, the terminal events leak the raw tokens
+    // and the rendered message ends up showing pii_<uuid>.
+    const vault = makeVault({ [TOKEN]: ORIGINAL });
+    const fullText = `Hi there. Your email is ${TOKEN}, take care.`;
+
+    const outputTextDone = `event: response.output_text.done\ndata: ${JSON.stringify({
+      type: "response.output_text.done",
+      content_index: 0,
+      item_id: "msg_test",
+      output_index: 0,
+      text: fullText,
+    })}`;
+
+    const completed = `event: response.completed\ndata: ${JSON.stringify({
+      type: "response.completed",
+      response: {
+        id: "resp_test",
+        output: [
+          {
+            id: "msg_test",
+            type: "message",
+            content: [{ type: "output_text", text: fullText }],
+          },
+        ],
+      },
+    })}`;
+
+    const upstream = chunkedStream([encodeSSE(outputTextDone, completed)]);
+    const { stream } = createDetokenizeStream(upstream, TEAM, ["pii_"], vault);
+    const output = await collectStream(stream);
+
+    // Token must NOT appear anywhere in either terminal event.
+    expect(output).not.toContain(TOKEN);
+    // Original value should appear in both events.
+    const occurrences = output.split(ORIGINAL).length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
   it("detokenizes a Responses API token split across two delta events", async () => {
     const vault = makeVault({ [TOKEN]: ORIGINAL });
     const part1 = TOKEN.slice(0, 12);

@@ -106,6 +106,31 @@ export function createDetokenizeStream(
   let pendingText = ""; // Accumulated text content from held events
   let heldEvents: string[] = []; // SSE events being held
 
+  // Responses API terminal events carry the full final assistant text in nested
+  // fields the delta-walker doesn't know about. Clients like TypingMind read
+  // from these events and overwrite whatever the deltas rendered, so any
+  // tokens here would leak even if every delta was detokenized correctly.
+  //
+  // - response.output_text.done       : data.text
+  // - response.content_part.done       : data.part.text
+  // - response.output_item.done        : data.item.content[].text
+  // - response.completed               : data.response.output[].content[].text
+  //
+  // We detokenize the entire event block string — the regex only matches
+  // `<prefix><uuid>` patterns, so nothing else in the JSON gets touched.
+  const TERMINAL_EVENT_TYPES = [
+    '"response.output_text.done"',
+    '"response.content_part.done"',
+    '"response.output_item.done"',
+    '"response.completed"',
+  ];
+  function isResponsesTerminalEvent(block: string): boolean {
+    for (const t of TERMINAL_EVENT_TYPES) {
+      if (block.includes(t)) return true;
+    }
+    return false;
+  }
+
   /** Replace text content in an SSE event's JSON payload */
   function replaceTextInEvent(eventBlock: string, newText: string): string {
     const lines = eventBlock.split("\n");
@@ -196,6 +221,15 @@ export function createDetokenizeStream(
           const trimmed = block.trim();
           if (!trimmed) continue;
 
+          // Terminal Responses events carry the full final text. Flush any
+          // pending deltas first, then detokenize the whole block and emit.
+          if (isResponsesTerminalEvent(trimmed)) {
+            await flushHeld(controller);
+            const detokenized = await detokenize(trimmed, teamId, tokenPrefixes, vault);
+            emit(controller, detokenized);
+            continue;
+          }
+
           const text = extractText(trimmed);
           heldEvents.push(trimmed);
           if (text !== null) pendingText += text;
@@ -225,9 +259,16 @@ export function createDetokenizeStream(
     async flush(controller) {
       try {
         if (sseBuffer.trim()) {
-          const text = extractText(sseBuffer.trim());
-          heldEvents.push(sseBuffer.trim());
-          if (text !== null) pendingText += text;
+          const trimmed = sseBuffer.trim();
+          if (isResponsesTerminalEvent(trimmed)) {
+            await flushHeld(controller);
+            const detokenized = await detokenize(trimmed, teamId, tokenPrefixes, vault);
+            emit(controller, detokenized);
+          } else {
+            const text = extractText(trimmed);
+            heldEvents.push(trimmed);
+            if (text !== null) pendingText += text;
+          }
         }
         await flushHeld(controller);
         resolveAccumulated(fullBody);

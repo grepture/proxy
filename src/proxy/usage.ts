@@ -80,7 +80,11 @@ function parseResponseData(body: string): unknown {
 function hasUsageData(data: unknown): boolean {
   if (!data || typeof data !== "object") return false;
   const obj = data as Record<string, unknown>;
-  return !!(obj.usage || obj.usageMetadata);
+  if (obj.usage || obj.usageMetadata) return true;
+  // Responses API streaming nests usage inside the response object
+  // on the final `response.completed` event.
+  const response = obj.response as Record<string, unknown> | undefined;
+  return !!(response && typeof response === "object" && response.usage);
 }
 
 function extractForProvider(
@@ -101,16 +105,27 @@ function extractForProvider(
 }
 
 function extractOpenAI(obj: Record<string, unknown>): UsageInfo | null {
-  const usage = obj.usage as Record<string, unknown> | undefined;
+  // Responses API nests usage and model under `response` on the streaming
+  // `response.completed` event; buffered Responses bodies have them at top
+  // level (same as Chat Completions). Try both.
+  const responseObj = obj.response as Record<string, unknown> | undefined;
+  const usage = (obj.usage ?? responseObj?.usage) as
+    | Record<string, unknown>
+    | undefined;
   if (!usage || typeof usage !== "object") return null;
-  const prompt = asNumber(usage.prompt_tokens);
-  const completion = asNumber(usage.completion_tokens);
+
+  // Chat Completions: prompt_tokens / completion_tokens
+  // Responses API:    input_tokens  / output_tokens
+  const prompt = asNumber(usage.prompt_tokens) ?? asNumber(usage.input_tokens);
+  const completion =
+    asNumber(usage.completion_tokens) ?? asNumber(usage.output_tokens);
   if (prompt === null && completion === null) return null;
+
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: asNumber(usage.total_tokens) ?? sum(prompt, completion),
-    model: asString(obj.model),
+    model: asString(obj.model) ?? asString(responseObj?.model),
     provider: "openai",
   };
 }

@@ -274,14 +274,23 @@ export async function proxyHandler(c: Context): Promise<Response> {
       }
     }
 
-    // Inject stream_options for OpenAI streaming so usage data appears in the
-    // final SSE chunk. Without this, extractUsage finds nothing and tokens log as 0.
+    // Inject stream_options for OpenAI Chat Completions streaming so usage
+    // appears in the final SSE chunk. Without this, extractUsage finds nothing
+    // and tokens log as 0. The Responses API ships usage natively in the
+    // `response.completed` event and rejects stream_options outright, so we
+    // only inject when the target is /chat/completions.
     if (streamingRequested && detectProvider(ctx.targetUrl) === "openai") {
-      const parsed = ctx.parsedBody as Record<string, unknown> | null;
-      if (parsed && !parsed.stream_options) {
-        parsed.stream_options = { include_usage: true };
-        ctx.parsedBody = parsed;
-        ctx.body = JSON.stringify(parsed);
+      let isChatCompletions = false;
+      try {
+        isChatCompletions = new URL(ctx.targetUrl).pathname.endsWith("/chat/completions");
+      } catch { /* invalid URL — fall through, no injection */ }
+      if (isChatCompletions) {
+        const parsed = ctx.parsedBody as Record<string, unknown> | null;
+        if (parsed && !parsed.stream_options) {
+          parsed.stream_options = { include_usage: true };
+          ctx.parsedBody = parsed;
+          ctx.body = JSON.stringify(parsed);
+        }
       }
     }
 

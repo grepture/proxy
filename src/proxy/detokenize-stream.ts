@@ -1,7 +1,7 @@
 import type { TokenVault } from "../providers/types";
 import { detokenize } from "../actions/tokenize";
 
-/** Extract text content from an SSE event's data payload (Anthropic + OpenAI) */
+/** Extract text content from an SSE event's data payload (Anthropic + OpenAI Chat + OpenAI Responses) */
 export function extractText(eventBlock: string): string | null {
   for (const line of eventBlock.split("\n")) {
     if (!line.startsWith("data: ")) continue;
@@ -9,9 +9,14 @@ export function extractText(eventBlock: string): string | null {
     if (payload === "[DONE]") return null;
     try {
       const json = JSON.parse(payload);
+      // Anthropic: content_block_delta has { delta: { text: "..." } }
       if (json.delta?.text !== undefined) return json.delta.text;
+      // OpenAI Chat Completions: { choices: [{ delta: { content: "..." } }] }
       const content = json.choices?.[0]?.delta?.content;
       if (content !== undefined) return content;
+      // OpenAI Responses API: response.output_text.delta has { delta: "..." } (string)
+      // Also covers response.refusal.delta which has the same shape.
+      if (typeof json.delta === "string") return json.delta;
     } catch {
       // Not parseable
     }
@@ -109,9 +114,14 @@ export function createDetokenizeStream(
       try {
         const json = JSON.parse(lines[i].slice(6));
         if (json.delta?.text !== undefined) {
+          // Anthropic
           json.delta.text = newText;
         } else if (json.choices?.[0]?.delta?.content !== undefined) {
+          // OpenAI Chat Completions
           json.choices[0].delta.content = newText;
+        } else if (typeof json.delta === "string") {
+          // OpenAI Responses API
+          json.delta = newText;
         } else {
           continue;
         }

@@ -220,4 +220,67 @@ describe("createDetokenizeStream", () => {
     expect(output).toContain("[TOKEN_EXPIRED]");
     expect(output).not.toContain(TOKEN);
   });
+
+  // OpenAI Responses API streams text as `response.output_text.delta` events
+  // with `delta` as a plain string, not an object. The detokenize stream needs
+  // to extract and replace that shape too, otherwise mask-and-restore tokens
+  // stream through untouched for GPT-5 / o-series traffic.
+  function responsesDelta(text: string): string {
+    return `event: response.output_text.delta\ndata: ${JSON.stringify({
+      type: "response.output_text.delta",
+      item_id: "msg_test",
+      output_index: 0,
+      content_index: 0,
+      delta: text,
+    })}`;
+  }
+
+  it("detokenizes a complete token in a Responses API delta event", async () => {
+    const vault = makeVault({ [TOKEN]: ORIGINAL });
+    const upstream = chunkedStream([
+      encodeSSE(responsesDelta(`Your email is ${TOKEN}`), OPENAI_DONE),
+    ]);
+
+    const { stream } = createDetokenizeStream(upstream, TEAM, ["pii_"], vault);
+    const output = await collectStream(stream);
+
+    expect(output).toContain(ORIGINAL);
+    expect(output).not.toContain(TOKEN);
+  });
+
+  it("detokenizes a Responses API token split across two delta events", async () => {
+    const vault = makeVault({ [TOKEN]: ORIGINAL });
+    const part1 = TOKEN.slice(0, 12);
+    const part2 = TOKEN.slice(12);
+
+    const upstream = chunkedStream([
+      encodeSSE(responsesDelta(part1)),
+      encodeSSE(responsesDelta(part2)),
+      encodeSSE(OPENAI_DONE),
+    ]);
+
+    const { stream } = createDetokenizeStream(upstream, TEAM, ["pii_"], vault);
+    const output = await collectStream(stream);
+
+    expect(output).toContain(ORIGINAL);
+    expect(output).not.toContain(TOKEN);
+  });
+});
+
+describe("extractText — Responses API", () => {
+  it("extracts text from a response.output_text.delta event (delta as string)", () => {
+    const event = `event: response.output_text.delta\ndata: ${JSON.stringify({
+      type: "response.output_text.delta",
+      delta: "hello world",
+    })}`;
+    expect(extractText(event)).toBe("hello world");
+  });
+
+  it("returns null for non-text Responses events (response.created)", () => {
+    const event = `event: response.created\ndata: ${JSON.stringify({
+      type: "response.created",
+      response: { id: "resp_test" },
+    })}`;
+    expect(extractText(event)).toBeNull();
+  });
 });

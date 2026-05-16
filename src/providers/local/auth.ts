@@ -15,6 +15,7 @@ export class LocalAuthProvider implements AuthProvider {
     return {
       team_id: "local",
       user_id: "local",
+      api_settings_id: "local",
       fallback_mode: "error",
       zero_data_mode: false,
       tier: "free",

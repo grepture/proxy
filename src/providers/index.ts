@@ -1,5 +1,5 @@
 import { config } from "../config";
-import type { AuthProvider, RuleProvider, LogWriter, ToolCallWriter, TokenVault, RateLimiter, QuotaChecker, RateQuotaChecker, ProviderKeyResolver } from "./types";
+import type { AuthProvider, RuleProvider, LogWriter, ToolCallWriter, TokenVault, RateLimiter, QuotaChecker, RateQuotaChecker, ProviderKeyResolver, BudgetChecker } from "./types";
 
 export type Providers = {
   auth: AuthProvider;
@@ -11,6 +11,7 @@ export type Providers = {
   quota: QuotaChecker;
   rateQuota: RateQuotaChecker;
   providerKeys: ProviderKeyResolver;
+  budgets: BudgetChecker;
 };
 
 let _providers: Providers | null = null;
@@ -39,6 +40,7 @@ export function getProviders(): Providers {
     const { CloudQuotaChecker } = require("./cloud/quota");
     const { CloudRateQuotaChecker } = require("./cloud/rate-quota");
     const { CloudProviderKeyResolver } = require("./cloud/provider-keys");
+    const { CloudBudgetChecker } = require("./cloud/budgets");
 
     _providers = {
       auth: new CloudAuthProvider(),
@@ -50,6 +52,7 @@ export function getProviders(): Providers {
       quota: new CloudQuotaChecker(),
       rateQuota: new CloudRateQuotaChecker(),
       providerKeys: new CloudProviderKeyResolver(),
+      budgets: new CloudBudgetChecker(),
     };
   } else {
     const { LocalAuthProvider } = require("./local/auth");
@@ -61,6 +64,7 @@ export function getProviders(): Providers {
     const { LocalQuotaChecker } = require("./local/quota");
     const { LocalRateQuotaChecker } = require("./local/rate-quota");
     const { LocalProviderKeyResolver } = require("./local/provider-keys");
+    const { LocalBudgetChecker } = require("./local/budgets");
 
     _providers = {
       auth: new LocalAuthProvider(),
@@ -72,6 +76,7 @@ export function getProviders(): Providers {
       quota: new LocalQuotaChecker(),
       rateQuota: new LocalRateQuotaChecker(),
       providerKeys: new LocalProviderKeyResolver(),
+      budgets: new LocalBudgetChecker(),
     };
   }
 

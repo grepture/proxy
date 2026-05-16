@@ -53,6 +53,34 @@ export interface RateQuotaChecker {
   checkAiSampling(teamId: string, tier: string): Promise<{ allowed: boolean; used: number; limit: number }>;
 }
 
+/** A budget rule from the team's definitions cache. */
+export interface BudgetDef {
+  id: string;
+  scope_type: "api_key" | "label";
+  api_settings_id: string | null;
+  scope_value: string | null;
+  period: "daily" | "monthly";
+  limit_cents: number;
+}
+
+/** A matching budget for the current request, with current spent micro-cents. */
+export interface BudgetMatch {
+  def: BudgetDef;
+  period_key: string;
+  spent_micro_cents: number;
+}
+
+export interface BudgetChecker {
+  /**
+   * Return budgets active for this team that match the (apiSettingsId, label) tuple.
+   * Caller decides whether to reject based on `spent_micro_cents` vs the limit.
+   */
+  match(teamId: string, apiSettingsId: string, label: string | null): Promise<BudgetMatch[]>;
+
+  /** Increment each matching budget's `:spent:` counter by `cost_micro_cents`. */
+  recordSpend(matches: BudgetMatch[], cost_micro_cents: number): Promise<void>;
+}
+
 /** A provider key after decryption — plaintext only lives in process memory. */
 export interface ResolvedProviderKey {
   id: string;

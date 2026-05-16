@@ -18,10 +18,11 @@ export class CloudAuthProvider implements AuthProvider {
     const hash = await sha256(apiKey);
     const cacheKey = `grepture:auth:${hash}`;
 
-    // Check Redis cache
+    // Check Redis cache. The `api_settings_id` field was added — fall through
+    // to Supabase for older cached entries so the new field gets populated.
     try {
       const cached = await redis.get<AuthInfo>(cacheKey);
-      if (cached) return cached;
+      if (cached && cached.api_settings_id) return cached;
     } catch {
       // Redis down — fall through to Supabase
     }
@@ -29,7 +30,7 @@ export class CloudAuthProvider implements AuthProvider {
     // Supabase fallback
     const { data, error } = await supabase
       .from("api_settings")
-      .select("team_id, user_id, fallback_mode, zero_data_mode")
+      .select("id, team_id, user_id, fallback_mode, zero_data_mode")
       .eq("api_key", apiKey)
       .single();
 
@@ -47,6 +48,7 @@ export class CloudAuthProvider implements AuthProvider {
     const info: AuthInfo = {
       team_id: data.team_id,
       user_id: data.user_id,
+      api_settings_id: data.id,
       fallback_mode: data.fallback_mode,
       zero_data_mode: data.zero_data_mode,
       tier: (sub?.tier as string) ?? "free",

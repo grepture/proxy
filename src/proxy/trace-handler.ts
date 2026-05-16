@@ -51,6 +51,7 @@ export async function traceHandler(c: Context): Promise<Response> {
     const logEntry: TrafficLogEntry = {
       user_id: auth.user_id,
       team_id: auth.team_id,
+      api_key_id: auth.api_settings_id,
       method: entry.method || "POST",
       target_url: zeroData ? redactUrl(entry.target_url) : (entry.target_url || ""),
       status_code: entry.status_code || 0,

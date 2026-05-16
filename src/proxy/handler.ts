@@ -17,6 +17,8 @@ import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCate
 import { fetchPrompt } from "../prompts/cache";
 import { resolveMessages } from "../prompts/resolver";
 import { handleToolCalls } from "./tool-calls-extract";
+import { estimateCostMicroCents } from "../pricing";
+import type { BudgetMatch } from "../providers/types";
 
 export async function proxyHandler(c: Context): Promise<Response> {
   const startedAt = performance.now();
@@ -175,6 +177,39 @@ export async function proxyHandler(c: Context): Promise<Response> {
     seq,
     sessionId,
   };
+
+  // --- Budget enforcement (pre-forward) ---
+  // Matching budgets are remembered for post-forward INCRBY. We fail open on
+  // any error — matches existing rate-quota fail-open behavior.
+  let budgetMatches: BudgetMatch[] = [];
+  try {
+    budgetMatches = await providers.budgets.match(
+      auth.team_id,
+      auth.api_settings_id,
+      label,
+    );
+  } catch (err) {
+    console.error("Budget match error:", err);
+  }
+  for (const m of budgetMatches) {
+    const limitMicroCents = m.def.limit_cents * 10_000;
+    if (m.spent_micro_cents >= limitMicroCents) {
+      c.header("X-Grepture-Budget-Status", "exceeded");
+      return c.json(
+        {
+          error: "Budget exceeded",
+          budget_id: m.def.id,
+          scope: m.def.scope_type === "label"
+            ? { type: "label", value: m.def.scope_value }
+            : { type: "api_key" },
+          limit_cents: m.def.limit_cents,
+          period: m.def.period,
+          period_key: m.period_key,
+        },
+        402,
+      );
+    }
+  }
 
   // --- Inject stored provider key if no header was supplied ---
   // We inject the primary key (first in chain) here for rules/pipeline access. The
@@ -353,6 +388,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         // Pass the raw SSE text so the stream reassembler can recover tool_use
         // blocks emitted incrementally during the stream.
         handleToolCalls(providers.toolCalls, ctx, trafficLogId, null, usage?.model ?? null, logBody);
+        recordBudgetSpend(providers.budgets, budgetMatches, usage);
       }).catch((err) => {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
@@ -438,6 +474,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
   // (post-redaction) response body once; skip silently on malformed bodies.
   const parsedResponse = rawLogBody ? tryParse(logBody) : null;
   handleToolCalls(providers.toolCalls, ctx, trafficLogId, parsedResponse, usage?.model ?? null, logBody);
+  recordBudgetSpend(providers.budgets, budgetMatches, usage);
 
   // --- Return response ---
   const responseHeaders = new Headers();
@@ -579,6 +616,7 @@ function logTraffic(
     id: crypto.randomUUID(),
     user_id: ctx.auth.user_id,
     team_id: ctx.auth.team_id,
+    api_key_id: ctx.auth.api_settings_id,
     method: ctx.method,
     target_url: zeroData ? redactUrl(ctx.targetUrl) : ctx.targetUrl,
     status_code: statusCode,
@@ -591,6 +629,8 @@ function logTraffic(
     prompt_tokens: usage?.prompt_tokens ?? null,
     completion_tokens: usage?.completion_tokens ?? null,
     total_tokens: usage?.total_tokens ?? null,
+    cache_read_tokens: usage?.cache_read_tokens ?? null,
+    cache_write_tokens: usage?.cache_write_tokens ?? null,
     model: usage?.model ?? null,
     provider: usage?.provider ?? null,
     original_request_body: zeroData ? null : (origDiffers ? originalBody! : null),
@@ -606,4 +646,27 @@ function logTraffic(
 
   log.push(entry);
   return entry.id!;
+}
+
+/**
+ * Fire-and-forget: increment each matching budget's :spent: counter by the
+ * estimated cost of this request. Failure is logged, never thrown.
+ */
+function recordBudgetSpend(
+  budgets: ReturnType<typeof getProviders>["budgets"],
+  matches: BudgetMatch[],
+  usage: UsageInfo | null,
+): void {
+  if (matches.length === 0 || !usage) return;
+  const cost = estimateCostMicroCents(
+    usage.model,
+    usage.prompt_tokens,
+    usage.completion_tokens,
+    usage.cache_read_tokens,
+    usage.cache_write_tokens,
+  );
+  if (cost <= 0) return;
+  budgets.recordSpend(matches, cost).catch((err) => {
+    console.error("recordBudgetSpend failed:", err);
+  });
 }

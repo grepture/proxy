@@ -4,6 +4,14 @@ export type UsageInfo = {
   total_tokens: number | null;
   model: string | null;
   provider: string | null;
+  // Provider prompt-caching breakouts. These are subsets of input billed at
+  // different rates — never additive to prompt_tokens.
+  //   Anthropic: usage.cache_read_input_tokens (disjoint with input_tokens)
+  //              usage.cache_creation_input_tokens (disjoint with input_tokens)
+  //   OpenAI:    usage.prompt_tokens_details.cached_tokens (subset of prompt_tokens)
+  // See `proxy/src/pricing.ts` for how these are priced.
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
 };
 
 export function extractUsage(
@@ -48,7 +56,10 @@ export function detectProvider(
 
 /**
  * Parse the response body. For streaming responses (concatenated SSE chunks),
- * find the last `data: {...}` line that contains usage info.
+ * find the latest event with usage info and merge in fields from earlier
+ * events that the latest event omits — notably Anthropic's `message_start`,
+ * which carries `model` and `input_tokens` (the final `message_delta` only
+ * has `output_tokens`).
  * For buffered responses, parse as plain JSON.
  */
 function parseResponseData(body: string): unknown {
@@ -59,22 +70,57 @@ function parseResponseData(body: string): unknown {
     // Not valid JSON — try SSE format
   }
 
-  // Streaming: find the last data line with usage info
-  const lines = body.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line.startsWith("data:")) continue;
-    const payload = line.slice(5).trim();
+  const events: Record<string, unknown>[] = [];
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
     if (payload === "[DONE]") continue;
     try {
       const parsed = JSON.parse(payload);
-      if (hasUsageData(parsed)) return parsed;
+      if (parsed && typeof parsed === "object") {
+        events.push(parsed as Record<string, unknown>);
+      }
     } catch {
       continue;
     }
   }
 
-  return null;
+  // Latest event with usage info — the canonical token totals live here.
+  let latest: Record<string, unknown> | null = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (hasUsageData(events[i])) {
+      latest = events[i];
+      break;
+    }
+  }
+  if (!latest) return null;
+
+  // Anthropic merge: `message_start` event holds model + input_tokens (plus
+  // cache_read/cache_creation breakouts when prompt caching is active) that
+  // `message_delta` omits. Copy them onto the latest event if missing.
+  for (const ev of events) {
+    if (ev.type !== "message_start") continue;
+    const msg = ev.message as Record<string, unknown> | undefined;
+    if (!msg) continue;
+    if (msg.model && !latest.model) latest.model = msg.model;
+    const msgUsage = msg.usage as Record<string, unknown> | undefined;
+    const latestUsage = latest.usage as Record<string, unknown> | undefined;
+    if (msgUsage && latestUsage) {
+      for (const key of [
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+      ]) {
+        if (msgUsage[key] != null && latestUsage[key] == null) {
+          latestUsage[key] = msgUsage[key];
+        }
+      }
+    }
+    break;
+  }
+
+  return latest;
 }
 
 function hasUsageData(data: unknown): boolean {
@@ -121,29 +167,48 @@ function extractOpenAI(obj: Record<string, unknown>): UsageInfo | null {
     asNumber(usage.completion_tokens) ?? asNumber(usage.output_tokens);
   if (prompt === null && completion === null) return null;
 
+  // Cached input is a subset of prompt_tokens, billed at 50% on Chat
+  // Completions and Responses API alike.
+  const promptDetails = (usage.prompt_tokens_details ??
+    usage.input_tokens_details) as Record<string, unknown> | undefined;
+  const cacheRead = promptDetails
+    ? asNumber(promptDetails.cached_tokens)
+    : null;
+
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: asNumber(usage.total_tokens) ?? sum(prompt, completion),
     model: asString(obj.model) ?? asString(responseObj?.model),
     provider: "openai",
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: null,
   };
 }
 
 function extractAnthropic(obj: Record<string, unknown>): UsageInfo | null {
   // Anthropic non-streaming: usage at top level
-  // Anthropic streaming: final message_delta event has usage
+  // Anthropic streaming: final message_delta event has usage; parseResponseData
+  // merges model + input_tokens from the earlier message_start event onto it.
   const usage = (obj.usage as Record<string, unknown> | undefined) ?? null;
   if (!usage || typeof usage !== "object") return null;
   const input = asNumber(usage.input_tokens);
   const output = asNumber(usage.output_tokens);
-  if (input === null && output === null) return null;
+  // Cache fields are disjoint from input_tokens on Anthropic — billed at
+  // 10% (read) and 125% (write) of the input rate respectively.
+  const cacheRead = asNumber(usage.cache_read_input_tokens);
+  const cacheWrite = asNumber(usage.cache_creation_input_tokens);
+  if (input === null && output === null && cacheRead === null && cacheWrite === null) {
+    return null;
+  }
   return {
     prompt_tokens: input,
     completion_tokens: output,
     total_tokens: sum(input, output),
     model: asString(obj.model),
     provider: "anthropic",
+    cache_read_tokens: cacheRead,
+    cache_write_tokens: cacheWrite,
   };
 }
 
@@ -159,6 +224,8 @@ function extractGemini(obj: Record<string, unknown>): UsageInfo | null {
     total_tokens: asNumber(meta.totalTokenCount) ?? sum(prompt, candidates),
     model: asString(obj.modelVersion),
     provider: "gemini",
+    cache_read_tokens: asNumber(meta.cachedContentTokenCount),
+    cache_write_tokens: null,
   };
 }
 

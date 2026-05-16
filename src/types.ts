@@ -157,6 +157,7 @@ export type TrafficLogEntry = {
   id?: string;
   user_id: string;
   team_id: string;
+  api_key_id?: string | null;
   method: string;
   target_url: string;
   status_code: number;
@@ -169,6 +170,8 @@ export type TrafficLogEntry = {
   prompt_tokens?: number | null;
   completion_tokens?: number | null;
   total_tokens?: number | null;
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
   model?: string | null;
   provider?: string | null;
   original_request_body?: string | null;
@@ -282,6 +285,7 @@ export type PromptVersionRecord = {
 export type AuthInfo = {
   team_id: string;
   user_id: string;
+  api_settings_id: string;
   fallback_mode: "passthrough" | "error";
   zero_data_mode: boolean;
   tier: string;

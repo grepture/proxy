@@ -17,9 +17,8 @@ export function registerBuiltinActions(): void {
 
   registerAction({
     type: "find_replace",
-    async execute(ctx, action) {
-      return executeFindReplace(ctx, action as Parameters<typeof executeFindReplace>[1]);
-    },
+    execute: (ctx, action, vault) =>
+      executeFindReplace(ctx, action as Parameters<typeof executeFindReplace>[1], vault),
   });
 
   registerAction({

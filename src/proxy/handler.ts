@@ -13,7 +13,7 @@ import { createResponsesToChatStream } from "./responses-to-chat-stream";
 import { config } from "../config";
 import { detectPii } from "../pii/detector";
 import { replacePii } from "../pii/replacer";
-import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCategory, RedactPiiAction, AiDetectPiiAction, PromptMessage } from "../types";
+import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCategory, RedactPiiAction, AiDetectPiiAction, FindReplaceAction, PromptMessage } from "../types";
 import { fetchPrompt } from "../prompts/cache";
 import { resolveMessages } from "../prompts/resolver";
 import { handleToolCalls } from "./tool-calls-extract";
@@ -521,6 +521,12 @@ function collectTokenPrefixes(allRules: Array<{ actions: Array<{ type: string; e
         const aiPiiAction = action as unknown as AiDetectPiiAction;
         if (aiPiiAction.mode === "mask_and_restore" && aiPiiAction.token_prefix) {
           prefixes.push(aiPiiAction.token_prefix);
+        }
+      }
+      if (action.type === "find_replace" && action.enabled) {
+        const fr = action as unknown as FindReplaceAction;
+        if (fr.mode === "mask_and_restore" && fr.token_prefix) {
+          prefixes.push(fr.token_prefix);
         }
       }
     }

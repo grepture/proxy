@@ -39,6 +39,9 @@ export type FindReplaceAction = ActionBase & {
   replace: string;
   is_regex: boolean;
   case_sensitive: boolean;
+  mode?: "redact" | "mask_and_restore";
+  token_prefix?: string;
+  ttl_seconds?: number;
 };
 
 export type TokenizeAction = ActionBase & {

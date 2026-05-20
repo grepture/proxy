@@ -3,6 +3,7 @@ import { executeBlockRequest } from "../src/actions/block-request";
 import { executeFindReplace } from "../src/actions/find-replace";
 import { executeRedactField } from "../src/actions/redact-field";
 import { executeLogOnly } from "../src/actions/log-only";
+import type { TokenVault } from "../src/providers/types";
 import type {
   RequestContext,
   AuthInfo,
@@ -11,6 +12,19 @@ import type {
   RedactFieldAction,
   LogOnlyAction,
 } from "../src/types";
+
+function makeVault(): TokenVault & { store: Map<string, string> } {
+  const store = new Map<string, string>();
+  return {
+    store,
+    async set(_teamId: string, token: string, value: string, _ttl: number) {
+      store.set(token, value);
+    },
+    async get(_teamId: string, token: string) {
+      return store.get(token) ?? null;
+    },
+  };
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -106,57 +120,127 @@ describe("executeBlockRequest", () => {
 // ─── executeFindReplace ───────────────────────────────────────────────────────
 
 describe("executeFindReplace", () => {
-  it("literal string replacement: body mutated and parsedBody re-parsed", () => {
+  it("literal string replacement: body mutated and parsedBody re-parsed", async () => {
     const ctx = makeCtx({ text: "hello foo world" });
-    executeFindReplace(ctx, makeFindReplaceAction({ find: "foo", replace: "bar" }));
+    await executeFindReplace(ctx, makeFindReplaceAction({ find: "foo", replace: "bar" }), makeVault());
     expect(ctx.body).toContain("bar");
     expect(ctx.body).not.toContain("foo");
     const parsed = ctx.parsedBody as Record<string, unknown>;
     expect(parsed.text).toBe("hello bar world");
   });
 
-  it("regex replacement with \\d+ pattern", () => {
+  it("regex replacement with \\d+ pattern", async () => {
     const ctx = makeCtx({ text: "order 123 and order 456" });
-    executeFindReplace(ctx, makeFindReplaceAction({ find: "\\d+", replace: "NUM", is_regex: true, case_sensitive: true }));
+    await executeFindReplace(ctx, makeFindReplaceAction({ find: "\\d+", replace: "NUM", is_regex: true, case_sensitive: true }), makeVault());
     const parsed = ctx.parsedBody as Record<string, unknown>;
     expect(parsed.text).toBe("order NUM and order NUM");
   });
 
-  it("case-insensitive mode replaces all occurrences regardless of case", () => {
+  it("case-insensitive mode replaces all occurrences regardless of case", async () => {
     const ctx = makeCtx({ text: "Foo foo FOO" });
-    executeFindReplace(ctx, makeFindReplaceAction({ find: "foo", replace: "bar", case_sensitive: false }));
+    await executeFindReplace(ctx, makeFindReplaceAction({ find: "foo", replace: "bar", case_sensitive: false }), makeVault());
     const parsed = ctx.parsedBody as Record<string, unknown>;
     expect(parsed.text).toBe("bar bar bar");
   });
 
-  it("invalid regex: body unchanged, returns {}", () => {
+  it("invalid regex: body unchanged, returns {}", async () => {
     const ctx = makeCtx({ text: "original" });
     const originalBody = ctx.body;
-    const result = executeFindReplace(ctx, makeFindReplaceAction({ find: "[invalid(", replace: "x", is_regex: true }));
+    const result = await executeFindReplace(ctx, makeFindReplaceAction({ find: "[invalid(", replace: "x", is_regex: true }), makeVault());
     expect(ctx.body).toBe(originalBody);
     expect(result).toEqual({});
   });
 
-  it("broken JSON after replacement: parsedBody stays stale from before action", () => {
-    // Build a context where body is a non-JSON string (simulate raw body)
+  it("broken JSON after replacement: parsedBody stays stale from before action", async () => {
     const ctx = makeCtx({ dummy: "placeholder" });
-    // Manually set body to something that will break JSON after replacement
     ctx.body = '{"key":"val"}SUFFIX';
     ctx.parsedBody = { key: "val" };
 
-    executeFindReplace(ctx, makeFindReplaceAction({ find: "val", replace: "v" }));
+    await executeFindReplace(ctx, makeFindReplaceAction({ find: "val", replace: "v" }), makeVault());
 
-    // Body was mutated
     expect(ctx.body).toContain('"v"');
-    // parsedBody stays as-is since re-parse failed (body is still valid JSON here)
-    // Separately test a case that truly breaks JSON:
+
     const ctx2 = makeCtx({ dummy: true });
     ctx2.body = "not json at all, find me";
     ctx2.parsedBody = { stale: true };
-    executeFindReplace(ctx2, makeFindReplaceAction({ find: "find me", replace: "replaced" }));
+    await executeFindReplace(ctx2, makeFindReplaceAction({ find: "find me", replace: "replaced" }), makeVault());
     expect(ctx2.body).toBe("not json at all, replaced");
-    // parsedBody was not re-parseable — stays unchanged (stale)
     expect((ctx2.parsedBody as Record<string, unknown>).stale).toBe(true);
+  });
+
+  it("mask_and_restore: regex matches replaced with prefixed UUID tokens and stored in vault", async () => {
+    const ctx = makeCtx({ text: "my NI is AB123456C and second AB654321D" });
+    const vault = makeVault();
+    await executeFindReplace(
+      ctx,
+      makeFindReplaceAction({
+        find: "\\b[A-Z]{2}\\d{6}[A-Z]\\b",
+        replace: "",
+        is_regex: true,
+        case_sensitive: true,
+        mode: "mask_and_restore",
+        token_prefix: "nin_",
+        ttl_seconds: 300,
+      }),
+      vault,
+    );
+    expect(ctx.body).not.toContain("AB123456C");
+    expect(ctx.body).not.toContain("AB654321D");
+    expect(ctx.body).toMatch(/nin_[0-9a-f-]{36}/);
+    const stored = [...vault.store.values()];
+    expect(stored).toContain("AB123456C");
+    expect(stored).toContain("AB654321D");
+  });
+
+  it("mask_and_restore: right-to-left replacement preserves match boundaries", async () => {
+    const ctx = makeCtx({ text: "abc-111-def-222-ghi-333" });
+    const vault = makeVault();
+    await executeFindReplace(
+      ctx,
+      makeFindReplaceAction({
+        find: "\\d{3}",
+        replace: "",
+        is_regex: true,
+        case_sensitive: true,
+        mode: "mask_and_restore",
+        token_prefix: "n_",
+        ttl_seconds: 60,
+      }),
+      vault,
+    );
+    expect(vault.store.size).toBe(3);
+    const stored = [...vault.store.values()].sort();
+    expect(stored).toEqual(["111", "222", "333"]);
+  });
+
+  it("mask_and_restore on free tier falls back to one-way redaction and does not write to vault", async () => {
+    const ctx = makeCtx({ text: "leaked AB123456C" });
+    ctx.auth = { ...ctx.auth, tier: "free" };
+    const vault = makeVault();
+    await executeFindReplace(
+      ctx,
+      makeFindReplaceAction({
+        find: "\\b[A-Z]{2}\\d{6}[A-Z]\\b",
+        replace: "[NI]",
+        is_regex: true,
+        case_sensitive: true,
+        mode: "mask_and_restore",
+        token_prefix: "nin_",
+        ttl_seconds: 300,
+      }),
+      vault,
+    );
+    expect(ctx.body).toContain("[NI]");
+    expect(ctx.body).not.toContain("nin_");
+    expect(vault.store.size).toBe(0);
+  });
+
+  it("mode absent: behaves as one-way (backwards compat)", async () => {
+    const ctx = makeCtx({ text: "hello foo" });
+    const vault = makeVault();
+    await executeFindReplace(ctx, makeFindReplaceAction({ find: "foo", replace: "bar" }), vault);
+    expect((ctx.parsedBody as Record<string, unknown>).text).toBe("hello bar");
+    expect(vault.store.size).toBe(0);
   });
 });
 

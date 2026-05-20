@@ -32,6 +32,7 @@ function makeCtx(body: Record<string, unknown>): RequestContext {
   const auth: AuthInfo = {
     team_id: "team-123",
     user_id: "user-456",
+    api_settings_id: "api-1",
     fallback_mode: "passthrough",
     zero_data_mode: false,
     tier: "pro",
@@ -211,28 +212,6 @@ describe("executeFindReplace", () => {
     expect(vault.store.size).toBe(3);
     const stored = [...vault.store.values()].sort();
     expect(stored).toEqual(["111", "222", "333"]);
-  });
-
-  it("mask_and_restore on free tier falls back to one-way redaction and does not write to vault", async () => {
-    const ctx = makeCtx({ text: "leaked AB123456C" });
-    ctx.auth = { ...ctx.auth, tier: "free" };
-    const vault = makeVault();
-    await executeFindReplace(
-      ctx,
-      makeFindReplaceAction({
-        find: "\\b[A-Z]{2}\\d{6}[A-Z]\\b",
-        replace: "[NI]",
-        is_regex: true,
-        case_sensitive: true,
-        mode: "mask_and_restore",
-        token_prefix: "nin_",
-        ttl_seconds: 300,
-      }),
-      vault,
-    );
-    expect(ctx.body).toContain("[NI]");
-    expect(ctx.body).not.toContain("nin_");
-    expect(vault.store.size).toBe(0);
   });
 
   it("mode absent: behaves as one-way (backwards compat)", async () => {

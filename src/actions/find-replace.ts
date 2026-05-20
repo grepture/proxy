@@ -22,17 +22,7 @@ export async function executeFindReplace(
     pattern = new RegExp(escaped, flags);
   }
 
-  const reversible = action.mode === "mask_and_restore";
-
-  // Defensive tier gate: mask_and_restore is Pro+ only. A stale rule from a
-  // downgraded team falls back to one-way redaction rather than silently
-  // storing tokens for a free team.
-  if (reversible && ctx.auth.tier === "free") {
-    console.warn(
-      `find_replace mask_and_restore attempted on free tier (team ${ctx.auth.team_id}); falling back to one-way redaction`,
-    );
-    ctx.body = ctx.body.replace(pattern, action.replace);
-  } else if (reversible) {
+  if (action.mode === "mask_and_restore") {
     const prefix = action.token_prefix || "tok_";
     const ttl = action.ttl_seconds || 3600;
 

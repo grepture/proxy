@@ -214,6 +214,67 @@ describe("executeFindReplace", () => {
     expect(stored).toEqual(["111", "222", "333"]);
   });
 
+  it("mask_and_restore: \\b regex matches values across JSON-escaped newlines", async () => {
+    // Repro of customer bug: SA ID numbers separated by \n in chat content.
+    // The JSON-encoded body has literal '\n' (backslash + 'n') between IDs, so a
+    // raw-string match with \b can never find a word boundary before the digits
+    // that follow 'n'. Walking decoded string values dodges this.
+    const ctx = makeCtx({
+      messages: [
+        {
+          role: "user",
+          content: "Please process these IDs:\n8501155000085\n9002102000087\n7508306001087",
+        },
+      ],
+    });
+    const vault = makeVault();
+    await executeFindReplace(
+      ctx,
+      makeFindReplaceAction({
+        find: "\\b\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])\\d{4}[01][89]\\d\\b",
+        replace: "",
+        is_regex: true,
+        case_sensitive: true,
+        mode: "mask_and_restore",
+        token_prefix: "za_id_",
+        ttl_seconds: 300,
+      }),
+      vault,
+    );
+    expect(ctx.body).not.toContain("8501155000085");
+    expect(ctx.body).not.toContain("9002102000087");
+    expect(ctx.body).not.toContain("7508306001087");
+    expect(vault.store.size).toBe(3);
+    const stored = [...vault.store.values()].sort();
+    expect(stored).toEqual(["7508306001087", "8501155000085", "9002102000087"]);
+  });
+
+  it("mask_and_restore: does not mask JSON structural keys", async () => {
+    // Pattern matches the literal field name "model" — but the key is structural,
+    // not data. Walking decoded values means keys are never touched, while the
+    // same substring in a value gets masked.
+    const ctx = makeCtx({ model: "gpt-4o-mini", text: "model value here" });
+    const vault = makeVault();
+    await executeFindReplace(
+      ctx,
+      makeFindReplaceAction({
+        find: "model",
+        replace: "",
+        is_regex: false,
+        case_sensitive: true,
+        mode: "mask_and_restore",
+        token_prefix: "m_",
+        ttl_seconds: 60,
+      }),
+      vault,
+    );
+    const parsed = ctx.parsedBody as Record<string, unknown>;
+    expect(Object.keys(parsed)).toContain("model");
+    expect(parsed.model).toBe("gpt-4o-mini");
+    expect(parsed.text).toMatch(/^m_[0-9a-f-]{36} value here$/);
+    expect(vault.store.size).toBe(1);
+  });
+
   it("mode absent: behaves as one-way (backwards compat)", async () => {
     const ctx = makeCtx({ text: "hello foo" });
     const vault = makeVault();

@@ -3,7 +3,7 @@ import type { PiiMatch } from "./detector";
 
 type ReplacementStrategy = "placeholder" | "hash" | "mask";
 
-const placeholders: Record<PiiCategory | AiPiiCategory, string> = {
+export const placeholders: Record<PiiCategory | AiPiiCategory, string> = {
   email: "[EMAIL_REDACTED]",
   phone: "[PHONE_REDACTED]",
   ssn: "[SSN_REDACTED]",

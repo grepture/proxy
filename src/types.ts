@@ -308,6 +308,44 @@ export type RequestContext = {
   metadata: Record<string, string> | null;
   seq: number | null;
   sessionId: string | null;
+  /** When set, redaction actions push per-match details here for the debug pipeline view. */
+  debugTrace?: DebugTrace | null;
+};
+
+/**
+ * Per-request capture of every pipeline stage for the debug demo view.
+ * Only populated when the caller opts in via X-Grepture-Debug header AND
+ * the team is not in zero_data_mode. Persisted to `debug_traces` with a
+ * 24h TTL, never to `traffic_logs`.
+ */
+export type DebugRedactionEntry = {
+  source: "redact_pii" | "ai_detect_pii" | "tokenize" | "find_replace";
+  category?: string;
+  field?: string;
+  original: string;
+  replacement: string;
+  mode: "redact" | "mask_and_restore";
+};
+
+export type DebugTrace = {
+  // Stage 1: exactly what the caller sent.
+  input_raw: string;
+  // Stage 2: every redaction/token replacement performed on the input.
+  redactions: DebugRedactionEntry[];
+  // Stage 3: what we actually forwarded upstream (post-redaction body).
+  upstream_request_body: string;
+  upstream_target_url: string;
+  // Stage 4: raw upstream response (pre-detokenize, pre-output-rules).
+  upstream_response_body: string;
+  upstream_status: number;
+  // Stage 5: final body returned to the caller (post-detokenize).
+  output_final: string;
+  // Timing per stage, useful in the demo view.
+  timings_ms: {
+    upstream?: number;
+    total?: number;
+  };
+  rules_applied: string[];
 };
 
 export type ActionResult = {

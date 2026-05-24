@@ -13,7 +13,7 @@ import { createResponsesToChatStream } from "./responses-to-chat-stream";
 import { config } from "../config";
 import { detectPii } from "../pii/detector";
 import { replacePii } from "../pii/replacer";
-import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCategory, RedactPiiAction, AiDetectPiiAction, FindReplaceAction, PromptMessage } from "../types";
+import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCategory, RedactPiiAction, AiDetectPiiAction, FindReplaceAction, PromptMessage, DebugTrace } from "../types";
 import { fetchPrompt } from "../prompts/cache";
 import { resolveMessages } from "../prompts/resolver";
 import { handleToolCalls } from "./tool-calls-extract";
@@ -178,6 +178,31 @@ export async function proxyHandler(c: Context): Promise<Response> {
     sessionId,
   };
 
+  // --- Debug trace (opt-in, default off) ---
+  // Header `X-Grepture-Debug: true` (or SDK `debug: true`) enables a per-request
+  // capture of every pipeline stage for the demo view. Hard-blocked in
+  // zero_data_mode — the whole point of zero-data is that we never see the raw
+  // body, and debug exists to retain it.
+  const debugRequested = (c.req.header("x-grepture-debug") || "").toLowerCase() === "true";
+  if (debugRequested) {
+    if (auth.zero_data_mode) {
+      c.header("X-Grepture-Debug", "rejected-zero-data");
+    } else {
+      ctx.debugTrace = {
+        input_raw: body,
+        redactions: [],
+        upstream_request_body: "",
+        upstream_target_url: targetUrl,
+        upstream_response_body: "",
+        upstream_status: 0,
+        output_final: "",
+        timings_ms: {},
+        rules_applied: [],
+      } satisfies DebugTrace;
+      c.header("X-Grepture-Debug", "captured");
+    }
+  }
+
   // --- Budget enforcement (pre-forward) ---
   // Matching budgets are remembered for post-forward INCRBY. We fail open on
   // any error — matches existing rate-quota fail-open behavior.
@@ -337,6 +362,14 @@ export async function proxyHandler(c: Context): Promise<Response> {
         .concat([60_000]),
     );
 
+    // Capture post-rules, pre-forward body for the debug view — this is exactly
+    // what we send to the upstream provider.
+    if (ctx.debugTrace) {
+      ctx.debugTrace.upstream_request_body = ctx.body;
+      ctx.debugTrace.rules_applied = [...inputRulesApplied];
+    }
+    const upstreamStart = performance.now();
+
     // Use forwardWithFallback when we have a stored key chain (enables automatic
     // failover on 5xx). When the caller supplied their own key, use the simple path.
     if (!callerSuppliedAuthForward && providerKeyChain.length > 0) {
@@ -346,6 +379,17 @@ export async function proxyHandler(c: Context): Promise<Response> {
     } else {
       forwardResult = await forwardRequest(ctx, timeoutMs, streamingRequested);
     }
+
+    if (ctx.debugTrace) {
+      ctx.debugTrace.timings_ms.upstream = Math.round(performance.now() - upstreamStart);
+      ctx.debugTrace.upstream_status = forwardResult.status;
+      // For buffered responses, snapshot the raw upstream body here — before
+      // output rules and detokenize mutate forwardResult.body. The streaming
+      // path captures the raw upstream via the tee'd stream instead.
+      if (forwardResult.mode === "buffered") {
+        ctx.debugTrace.upstream_response_body = forwardResult.body;
+      }
+    }
     logRedactCategories = collectMaskRestoreCategories(allRules);
 
     // --- Streaming path ---
@@ -353,9 +397,21 @@ export async function proxyHandler(c: Context): Promise<Response> {
       const tokenizePrefixes = collectTokenPrefixes(allRules, inputRulesApplied);
       const translateResponsesToChat = c.get("translateResponsesToChat" as never) as boolean | undefined;
 
+      // When debug is enabled, tee the raw upstream body so we can capture
+      // both the pre-detokenize bytes (debug.upstream_response_body) and the
+      // final detokenized output (debug.output_final) without consuming the
+      // client-facing stream twice.
+      let rawForDetokenize = forwardResult.rawBody;
+      let rawCapturePromise: Promise<string> | null = null;
+      if (ctx.debugTrace) {
+        const [a, b] = forwardResult.rawBody.tee();
+        rawForDetokenize = a;
+        rawCapturePromise = accumulateStream(b);
+      }
+
       const upstreamBody = translateResponsesToChat
-        ? createResponsesToChatStream(forwardResult.rawBody)
-        : forwardResult.rawBody;
+        ? createResponsesToChatStream(rawForDetokenize)
+        : rawForDetokenize;
 
       const { stream, accumulated } = createDetokenizeStream(
         upstreamBody,
@@ -389,6 +445,14 @@ export async function proxyHandler(c: Context): Promise<Response> {
         // blocks emitted incrementally during the stream.
         handleToolCalls(providers.toolCalls, ctx, trafficLogId, null, usage?.model ?? null, logBody);
         recordBudgetSpend(providers.budgets, budgetMatches, usage);
+        const dbg = ctx.debugTrace;
+        if (dbg) {
+          const rawUpstream = rawCapturePromise ? await rawCapturePromise.catch(() => "") : "";
+          dbg.upstream_response_body = rawUpstream;
+          dbg.output_final = fullBody;
+          dbg.timings_ms.total = Math.round(duration);
+          writeDebugTrace(providers.log, ctx, trafficLogId);
+        }
       }).catch((err) => {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
@@ -469,6 +533,20 @@ export async function proxyHandler(c: Context): Promise<Response> {
     resolvedPromptVersion,
     providerKeyIdUsed,
   );
+
+  if (ctx.debugTrace && forwardResult.mode === "buffered") {
+    // For the buffered path, output_final is the post-rules + post-detokenize body
+    // (forwardResult.body has been mutated through both). The upstream_response_body
+    // was captured immediately after forward, before output rules mutated the body.
+    // We re-capture it here from the original forwardResult.body content via the
+    // rawLogBody — but rawLogBody is already redactForLog'd. Use forwardResult.body
+    // for output_final; we need a snapshot pre-output-rules for upstream_response_body.
+    // Approach: take the post-detokenize forwardResult.body as output_final, and rely
+    // on the snapshot we'll take right after the forward call (set below).
+    ctx.debugTrace.output_final = forwardResult.body;
+    ctx.debugTrace.timings_ms.total = Math.round(duration);
+    writeDebugTrace(providers.log, ctx, trafficLogId);
+  }
 
   // Extract tool_use / tool_result from the buffered exchange. Parse the
   // (post-redaction) response body once; skip silently on malformed bodies.
@@ -652,6 +730,47 @@ function logTraffic(
 
   log.push(entry);
   return entry.id!;
+}
+
+/** Accumulate a ReadableStream into a single decoded string. */
+async function accumulateStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let out = "";
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  return out;
+}
+
+/**
+ * Push the captured debug pipeline trace. Fire-and-forget — never throws.
+ * Only called when the caller opted in AND the team is not in zero_data_mode
+ * (guarded at request start).
+ */
+function writeDebugTrace(
+  log: ReturnType<typeof getProviders>["log"],
+  ctx: RequestContext,
+  trafficLogId: string,
+): void {
+  if (!ctx.debugTrace) return;
+  try {
+    log.pushDebugTrace({
+      team_id: ctx.auth.team_id,
+      user_id: ctx.auth.user_id,
+      traffic_log_id: trafficLogId,
+      stages: ctx.debugTrace,
+    });
+  } catch (err) {
+    console.error("writeDebugTrace failed:", err);
+  }
 }
 
 /**

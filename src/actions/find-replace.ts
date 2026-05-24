@@ -57,11 +57,31 @@ export async function executeFindReplace(
       const token = `${prefix}${crypto.randomUUID()}`;
       await vault.set(ctx.auth.team_id, token, m[0], ttl);
       result = result.slice(0, m.index) + token + result.slice(m.index + m[0].length);
+      if (ctx.debugTrace) {
+        ctx.debugTrace.redactions.push({
+          source: "find_replace",
+          original: m[0],
+          replacement: token,
+          mode: "mask_and_restore",
+        });
+      }
     }
     return result;
   };
 
-  const replaceString: StringTransform = async (s) => s.replace(pattern, action.replace);
+  const replaceString: StringTransform = async (s) => {
+    if (!ctx.debugTrace) return s.replace(pattern, action.replace);
+    const matches = [...s.matchAll(pattern)];
+    for (const m of matches) {
+      ctx.debugTrace.redactions.push({
+        source: "find_replace",
+        original: m[0],
+        replacement: action.replace,
+        mode: "redact",
+      });
+    }
+    return s.replace(pattern, action.replace);
+  };
   const transform = isMask ? maskString : replaceString;
 
   // Prefer walking decoded string values: regex authors think in terms of the

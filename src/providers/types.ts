@@ -1,4 +1,13 @@
-import type { AuthInfo, Rule, TrafficLogEntry, EmbeddingLogEntry, RuleAction, RequestContext, ActionResult, ToolCallInsertRow, ToolCallLink } from "../types";
+import type { AuthInfo, Rule, TrafficLogEntry, EmbeddingLogEntry, RuleAction, RequestContext, ActionResult, ToolCallInsertRow, ToolCallLink, DebugTrace } from "../types";
+
+/** A row destined for debug_traces. Bodies may be large; the writer offloads to R2 if available. */
+export type DebugTraceEntry = {
+  id?: string;
+  team_id: string;
+  user_id: string;
+  traffic_log_id: string;
+  stages: DebugTrace;
+};
 
 export interface ActionPlugin {
   type: string;
@@ -18,6 +27,7 @@ export interface RuleProvider {
 export interface LogWriter {
   push(entry: TrafficLogEntry): void;
   pushEmbedding(entry: EmbeddingLogEntry): void;
+  pushDebugTrace(entry: DebugTraceEntry): void;
   flush(): Promise<void>;
 }
 

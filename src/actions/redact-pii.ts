@@ -1,7 +1,21 @@
 import type { TokenVault } from "../providers/types";
 import { detectPii } from "../pii/detector";
-import { replacePii } from "../pii/replacer";
+import { placeholders, replacePii } from "../pii/replacer";
 import type { RedactPiiAction, RequestContext, ActionResult } from "../types";
+
+function debugReplacementLabel(
+  category: keyof typeof placeholders,
+  strategy: "placeholder" | "hash" | "mask",
+  original: string,
+): string {
+  if (strategy === "placeholder") return placeholders[category] || "[REDACTED]";
+  if (strategy === "mask") {
+    if (original.length <= 2) return "**";
+    if (original.length <= 4) return original[0] + "***";
+    return original[0] + "*".repeat(original.length - 2) + original[original.length - 1];
+  }
+  return "[HASHED]";
+}
 
 export async function executeRedactPii(
   ctx: RequestContext,
@@ -23,11 +37,31 @@ export async function executeRedactPii(
       const token = `${prefix}${crypto.randomUUID()}`;
       await vault.set(ctx.auth.team_id, token, m.match, ttl);
       result = result.slice(0, m.start) + token + result.slice(m.end);
+      if (ctx.debugTrace) {
+        ctx.debugTrace.redactions.push({
+          source: "redact_pii",
+          category: m.category,
+          original: m.match,
+          replacement: token,
+          mode: "mask_and_restore",
+        });
+      }
     }
 
     ctx.body = result;
   } else {
     // Permanent redaction (existing behavior)
+    if (ctx.debugTrace) {
+      for (const m of matches) {
+        ctx.debugTrace.redactions.push({
+          source: "redact_pii",
+          category: m.category,
+          original: m.match,
+          replacement: debugReplacementLabel(m.category, action.replacement, m.match),
+          mode: "redact",
+        });
+      }
+    }
     ctx.body = await replacePii(ctx.body, matches, action.replacement);
   }
 

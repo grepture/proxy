@@ -1,6 +1,6 @@
 import { supabase } from "../../infra/supabase";
 import { buildHotBodyKey, r2Enabled, uploadHotBody } from "../../infra/r2";
-import type { LogWriter } from "../types";
+import type { LogWriter, DebugTraceEntry } from "../types";
 import type { TrafficLogEntry, EmbeddingLogEntry } from "../../types";
 
 const FLUSH_SIZE = 50;
@@ -35,6 +35,7 @@ const BODY_FIELDS: { body: BodyField; key: R2KeyField }[] = [
 export class CloudLogWriter implements LogWriter {
   private buffer: TrafficLogEntry[] = [];
   private embeddingBuffer: EmbeddingLogEntry[] = [];
+  private debugBuffer: DebugTraceEntry[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
 
   private startTimer() {
@@ -62,8 +63,21 @@ export class CloudLogWriter implements LogWriter {
     }
   }
 
+  pushDebugTrace(entry: DebugTraceEntry): void {
+    this.debugBuffer.push(entry);
+    this.startTimer();
+
+    if (this.debugBuffer.length >= FLUSH_SIZE) {
+      this.flushDebugTraces();
+    }
+  }
+
   async flush(): Promise<void> {
-    await Promise.all([this.flushTraffic(), this.flushEmbeddings()]);
+    await Promise.all([
+      this.flushTraffic(),
+      this.flushEmbeddings(),
+      this.flushDebugTraces(),
+    ]);
   }
 
   private async flushTraffic(): Promise<void> {
@@ -97,6 +111,32 @@ export class CloudLogWriter implements LogWriter {
       }
     } catch (err) {
       console.error("Embedding log flush failed:", err);
+    }
+  }
+
+  private async flushDebugTraces(): Promise<void> {
+    if (this.debugBuffer.length === 0) return;
+
+    const batch = this.debugBuffer;
+    this.debugBuffer = [];
+
+    try {
+      const rows = batch.map((e) => {
+        const row: Record<string, unknown> = {
+          team_id: e.team_id,
+          user_id: e.user_id,
+          traffic_log_id: e.traffic_log_id,
+          stages: e.stages,
+        };
+        if (e.id) row.id = e.id;
+        return row;
+      });
+      const { error } = await supabase.from("debug_traces").insert(rows);
+      if (error) {
+        console.error(`Failed to write ${batch.length} debug trace entries:`, error.message);
+      }
+    } catch (err) {
+      console.error("Debug trace flush failed:", err);
     }
   }
 }

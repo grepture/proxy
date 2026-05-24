@@ -51,6 +51,16 @@ export async function executeTokenize(
 
     // Replace in parsed body
     setByPath(ctx.parsedBody, field, token);
+
+    if (ctx.debugTrace) {
+      ctx.debugTrace.redactions.push({
+        source: "tokenize",
+        field,
+        original: originalStr,
+        replacement: token,
+        mode: "mask_and_restore",
+      });
+    }
   }
 
   // Re-serialize body

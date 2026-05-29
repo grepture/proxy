@@ -17,40 +17,60 @@ function debugReplacementLabel(
   return "[HASHED]";
 }
 
+type StringTransform = (s: string) => Promise<string>;
+
+/** Walk only the string leaves of a parsed JSON value, applying `transform`. */
+async function transformStrings(value: unknown, transform: StringTransform): Promise<unknown> {
+  if (typeof value === "string") return transform(value);
+  if (Array.isArray(value)) {
+    const out: unknown[] = new Array(value.length);
+    for (let i = 0; i < value.length; i++) out[i] = await transformStrings(value[i], transform);
+    return out;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = await transformStrings(v, transform);
+    return out;
+  }
+  return value;
+}
+
 export async function executeRedactPii(
   ctx: RequestContext,
   action: RedactPiiAction,
   vault: TokenVault,
 ): Promise<ActionResult> {
-  const matches = detectPii(ctx.body, action.categories);
-  if (matches.length === 0) return {};
+  const isMask = action.mode === "mask_and_restore";
+  const prefix = action.token_prefix || "pii_";
+  const ttl = action.ttl_seconds || 3600;
 
-  if (action.mode === "mask_and_restore") {
-    // Generate tokens for each PII match and store originals in vault
-    const prefix = action.token_prefix || "pii_";
-    const ttl = action.ttl_seconds || 3600;
+  // Redact PII within a single decoded string. Indices from detectPii refer to
+  // this string, so replacement stays inside the value and can't break JSON.
+  const redactString: StringTransform = async (s) => {
+    const matches = detectPii(s, action.categories);
+    if (matches.length === 0) return s;
 
-    // Replace right-to-left to preserve indices
-    let result = ctx.body;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const m = matches[i];
-      const token = `${prefix}${crypto.randomUUID()}`;
-      await vault.set(ctx.auth.team_id, token, m.match, ttl);
-      result = result.slice(0, m.start) + token + result.slice(m.end);
-      if (ctx.debugTrace) {
-        ctx.debugTrace.redactions.push({
-          source: "redact_pii",
-          category: m.category,
-          original: m.match,
-          replacement: token,
-          mode: "mask_and_restore",
-        });
+    if (isMask) {
+      // Replace right-to-left to preserve indices; store originals in the vault.
+      let result = s;
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const m = matches[i];
+        const token = `${prefix}${crypto.randomUUID()}`;
+        await vault.set(ctx.auth.team_id, token, m.match, ttl);
+        result = result.slice(0, m.start) + token + result.slice(m.end);
+        if (ctx.debugTrace) {
+          ctx.debugTrace.redactions.push({
+            source: "redact_pii",
+            category: m.category,
+            original: m.match,
+            replacement: token,
+            mode: "mask_and_restore",
+          });
+        }
       }
+      return result;
     }
 
-    ctx.body = result;
-  } else {
-    // Permanent redaction (existing behavior)
     if (ctx.debugTrace) {
       for (const m of matches) {
         ctx.debugTrace.redactions.push({
@@ -62,14 +82,33 @@ export async function executeRedactPii(
         });
       }
     }
-    ctx.body = await replacePii(ctx.body, matches, action.replacement);
+    return replacePii(s, matches, action.replacement);
+  };
+
+  // Prefer walking decoded JSON string values: this keeps matches from landing
+  // on structural tokens (numbers like `created`, keys, punctuation) and
+  // corrupting the document. Mirrors find_replace / tokenize. Falls back to
+  // whole-body redaction for non-JSON payloads.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(ctx.body);
+  } catch {
+    parsed = undefined;
   }
 
-  // Re-parse body if it was JSON
+  if (parsed !== null && typeof parsed === "object") {
+    const transformed = await transformStrings(parsed, redactString);
+    ctx.body = JSON.stringify(transformed);
+    ctx.parsedBody = transformed;
+    return {};
+  }
+
+  // Non-JSON body: redact the raw text.
+  ctx.body = await redactString(ctx.body);
   try {
     ctx.parsedBody = JSON.parse(ctx.body);
   } catch {
-    // Not valid JSON after replacement — that's fine
+    // Not valid JSON after replacement — that's fine.
   }
 
   return {};

@@ -69,6 +69,18 @@ export type LogOnlyAction = ActionBase & {
   label: string;
 };
 
+export type RestrictToolsAction = ActionBase & {
+  type: "restrict_tools";
+  // Tool names the agent is permitted to call. Anything not listed is disallowed.
+  allowed_tools: string[];
+  // Which enforcement points are active for this policy.
+  enforce: { request: boolean; response: boolean };
+  // What to do when a disallowed tool call appears in the response (buffered only).
+  on_violation: "block" | "strip";
+  block_status_code: number;
+  block_message: string;
+};
+
 export type AiDetectPiiAction = ActionBase & {
   type: "ai_detect_pii";
   categories: AiPiiCategory[];
@@ -124,7 +136,8 @@ export type RuleAction =
   | AiDetectInjectionAction
   | AiDetectToxicityAction
   | AiDetectDlpAction
-  | AiDetectComplianceAction;
+  | AiDetectComplianceAction
+  | RestrictToolsAction;
 
 export type RuleCondition = {
   id: string;
@@ -308,6 +321,10 @@ export type RequestContext = {
   metadata: Record<string, string> | null;
   seq: number | null;
   sessionId: string | null;
+  /** Which pipeline pass this context represents. Unset/"input" = request pass;
+   * "output" = response pass (set by the handler on the response-oriented context).
+   * Lets a single action behave differently per direction. */
+  phase?: "input" | "output";
   /** When set, redaction actions push per-match details here for the debug pipeline view. */
   debugTrace?: DebugTrace | null;
 };

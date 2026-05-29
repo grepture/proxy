@@ -474,6 +474,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
       body: forwardResult.body,
       parsedBody: tryParse(forwardResult.body),
       headers: forwardResult.headers,
+      phase: "output",
     };
 
     const matchedOutput = matchRules(responseCtx, outputRules);
@@ -483,6 +484,22 @@ export async function proxyHandler(c: Context): Promise<Response> {
       inputRulesApplied.push(...outputResult.rulesApplied);
       allTags.push(...outputResult.tags);
       if (outputResult.aiSampling) aiSampling = outputResult.aiSampling;
+
+      // An output action (e.g. restrict_tools) may block the response outright.
+      // The upstream call already happened, so log it (with usage/tool calls) and
+      // record spend, then return the error instead of the offending body.
+      if (outputResult.blocked) {
+        const duration = performance.now() - startedAt;
+        const blockedLogBody = await redactForLog(forwardResult.body, logRedactCategories);
+        const usage = extractUsage(forwardResult.body, ctx.targetUrl);
+        const trafficLogId = logTraffic(providers.log, ctx, outputResult.statusCode || 403, duration, inputRulesApplied, blockedLogBody, forwardResult.headers, usage, body, resolvedPromptId, resolvedPromptVersion, providerKeyIdUsed);
+        handleToolCalls(providers.toolCalls, ctx, trafficLogId, tryParse(blockedLogBody), usage?.model ?? null, blockedLogBody);
+        recordBudgetSpend(providers.budgets, budgetMatches, usage);
+        return c.json(
+          { error: outputResult.message || "Response blocked" },
+          (outputResult.statusCode || 403) as ContentfulStatusCode,
+        );
+      }
 
       // Update forward result with mutated body
       forwardResult.body = responseCtx.body;

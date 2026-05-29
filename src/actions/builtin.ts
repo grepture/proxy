@@ -5,6 +5,7 @@ import { executeTokenize } from "./tokenize";
 import { executeRedactField } from "./redact-field";
 import { executeBlockRequest } from "./block-request";
 import { executeLogOnly } from "./log-only";
+import { executeRestrictTools } from "./restrict-tools";
 import type { RuleAction, RequestContext } from "../types";
 import type { TokenVault } from "../providers/types";
 
@@ -46,5 +47,11 @@ export function registerBuiltinActions(): void {
     async execute(_ctx, action) {
       return executeLogOnly(action as Parameters<typeof executeLogOnly>[0]);
     },
+  });
+
+  registerAction({
+    type: "restrict_tools",
+    execute: (ctx, action) =>
+      executeRestrictTools(ctx, action as Parameters<typeof executeRestrictTools>[1]),
   });
 }

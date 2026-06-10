@@ -89,7 +89,13 @@ export class CloudLogWriter implements LogWriter {
     await offloadLargeBodies(batch);
 
     try {
-      const { error } = await supabase.from("traffic_logs").insert(batch);
+      // Batches mix proxy entries and SDK trace entries with different key
+      // sets. Without defaultToNull: false, supabase-js sends explicit NULL
+      // for keys a row lacks (e.g. `source`, `id`), bypassing column defaults
+      // and violating NOT NULL constraints.
+      const { error } = await supabase
+        .from("traffic_logs")
+        .insert(batch, { defaultToNull: false });
       if (error) {
         console.error(`Failed to write ${batch.length} log entries:`, error.message);
       }
@@ -105,7 +111,9 @@ export class CloudLogWriter implements LogWriter {
     this.embeddingBuffer = [];
 
     try {
-      const { error } = await supabase.from("embedding_logs").insert(batch);
+      const { error } = await supabase
+        .from("embedding_logs")
+        .insert(batch, { defaultToNull: false });
       if (error) {
         console.error(`Failed to write ${batch.length} embedding log entries:`, error.message);
       }
@@ -131,7 +139,9 @@ export class CloudLogWriter implements LogWriter {
         if (e.id) row.id = e.id;
         return row;
       });
-      const { error } = await supabase.from("debug_traces").insert(rows);
+      const { error } = await supabase
+        .from("debug_traces")
+        .insert(rows, { defaultToNull: false });
       if (error) {
         console.error(`Failed to write ${batch.length} debug trace entries:`, error.message);
       }

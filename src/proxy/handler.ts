@@ -7,6 +7,7 @@ import { runPipeline, type PipelineResult } from "../actions/pipeline";
 import { forwardRequest, type ForwardResult } from "./forward";
 import { assertSafeTarget, SsrfBlockedError } from "./ssrf-guard";
 import { forwardWithFallback } from "./forward-with-fallback";
+import { parseTraceparent } from "./traceparent";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
 import { createDetokenizeStream } from "./detokenize-stream";
@@ -155,7 +156,15 @@ export async function proxyHandler(c: Context): Promise<Response> {
     (parsedBody as Record<string, unknown>).stream === true;
 
   // --- Extract trace ID (optional, for conversation tracing) ---
-  const traceId = c.req.header("x-grepture-trace-id") || null;
+  // Explicit Grepture trace id wins; otherwise fall back to W3C traceparent so
+  // exported spans join the caller's existing distributed trace.
+  const greptureTraceId = c.req.header("x-grepture-trace-id") || null;
+  const traceparent = parseTraceparent(c.req.header("traceparent"));
+  const traceId = greptureTraceId ?? traceparent?.traceId ?? null;
+  // The caller's span is only a valid parent when the trace id itself came
+  // from traceparent — under an explicit Grepture trace id it belongs to a
+  // different trace.
+  const parentSpanId = greptureTraceId ? null : (traceparent?.spanId ?? null);
 
   // --- Extract label (optional, per-request identifier within a trace) ---
   const label = c.req.header("x-grepture-label") || null;
@@ -190,6 +199,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     parsedBody,
     startedAt,
     traceId,
+    parentSpanId,
     label,
     metadata,
     seq,
@@ -754,6 +764,7 @@ function logTraffic(
     provider: usage?.provider ?? null,
     original_request_body: zeroData ? null : (origDiffers ? originalBody! : null),
     trace_id: ctx.traceId,
+    parent_span_id: ctx.parentSpanId,
     label: ctx.label,
     metadata: ctx.metadata,
     seq: ctx.seq,

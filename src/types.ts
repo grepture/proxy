@@ -195,6 +195,7 @@ export type TrafficLogEntry = {
   response_body_r2_key?: string | null;
   original_request_body_r2_key?: string | null;
   trace_id?: string | null;
+  parent_span_id?: string | null;
   label?: string | null;
   metadata?: Record<string, string> | null;
   seq?: number | null;
@@ -317,6 +318,9 @@ export type RequestContext = {
   parsedBody: unknown;
   startedAt: number;
   traceId: string | null;
+  /** Caller's span id from an incoming W3C traceparent header (only set when
+   * traceId also came from traceparent). */
+  parentSpanId: string | null;
   label: string | null;
   metadata: Record<string, string> | null;
   seq: number | null;

@@ -5,6 +5,7 @@ import { filterRules } from "../rules/filter";
 import { matchRules } from "../rules/matcher";
 import { runPipeline, type PipelineResult } from "../actions/pipeline";
 import { forwardRequest, type ForwardResult } from "./forward";
+import { assertSafeTarget, SsrfBlockedError } from "./ssrf-guard";
 import { forwardWithFallback } from "./forward-with-fallback";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
@@ -46,7 +47,12 @@ export async function proxyHandler(c: Context): Promise<Response> {
   }
 
   // --- Target URL (synchronous — do before async work) ---
-  const targetUrl = c.req.header("x-grepture-target") || (c.get("injectedTarget" as never) as string | undefined);
+  // A server-injected target (set by provider middleware routes like /openai/*)
+  // is authoritative and must win over a client-supplied X-Grepture-Target,
+  // otherwise a caller could redirect a "pinned" provider route at an arbitrary
+  // host. Only the generic /proxy/* route has no injected target.
+  const injectedTarget = c.get("injectedTarget" as never) as string | undefined;
+  const targetUrl = injectedTarget || c.req.header("x-grepture-target");
   if (!targetUrl) {
     return c.json({ error: "Missing X-Grepture-Target header" }, 400);
   }
@@ -55,6 +61,18 @@ export async function proxyHandler(c: Context): Promise<Response> {
     new URL(targetUrl);
   } catch {
     return c.json({ error: "Invalid X-Grepture-Target URL" }, 400);
+  }
+
+  // SSRF guard: block targets that resolve to private/internal/metadata
+  // addresses. Cloud only — self-hosted deployments may proxy to localhost
+  // models. Injected provider targets are public hosts and pass cleanly.
+  if (config.mode === "cloud") {
+    try {
+      await assertSafeTarget(targetUrl);
+    } catch (err) {
+      const message = err instanceof SsrfBlockedError ? err.message : "Invalid target URL";
+      return c.json({ error: message }, 400);
+    }
   }
 
   // --- Kick off parallel work (all need auth, none depend on each other) ---

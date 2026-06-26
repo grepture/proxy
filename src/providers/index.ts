@@ -42,11 +42,15 @@ export function getProviders(): Providers {
     const { CloudProviderKeyResolver } = require("./cloud/provider-keys");
     const { CloudBudgetChecker } = require("./cloud/budgets");
 
+    const cloudLog = new CloudLogWriter();
     _providers = {
       auth: new CloudAuthProvider(),
       rules: new CloudRuleProvider(),
-      log: new CloudLogWriter(),
-      toolCalls: new CloudToolCallWriter(),
+      log: cloudLog,
+      // Shares the log writer so tool_calls flush commits parent traffic_logs
+      // first — the two buffers flush independently and the FK would otherwise
+      // race (23503 on tool_calls.traffic_log_id).
+      toolCalls: new CloudToolCallWriter(cloudLog),
       vault: new CloudTokenVault(),
       rateLimiter: new CloudRateLimiter(),
       quota: new CloudQuotaChecker(),

@@ -25,8 +25,9 @@ function hashArgs(args: Record<string, unknown>): string {
  * - tool_result messages in the follow-up request → link updates.
  *
  * `trafficLogId` is the pre-assigned id of the traffic_logs row being
- * written in the same flush cycle — used as FK for both inserts (source of
- * tool_use) and links (location of tool_result).
+ * written for this exchange — used as FK for both inserts (source of
+ * tool_use) and links (location of tool_result). The tool-call writer flushes
+ * the log writer first so this parent row is committed before the FK lands.
  *
  * `rawResponseBody` is needed so that SSE-streamed responses can be parsed
  * via the stream reassembler; leave null/undefined for non-streaming.

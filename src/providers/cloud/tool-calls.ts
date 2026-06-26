@@ -1,5 +1,5 @@
 import { supabase } from "../../infra/supabase";
-import type { ToolCallWriter } from "../types";
+import type { LogWriter, ToolCallWriter } from "../types";
 import type { ToolCallInsertRow, ToolCallLink } from "../../types";
 
 const FLUSH_SIZE = 50;
@@ -9,6 +9,12 @@ export class CloudToolCallWriter implements ToolCallWriter {
   private inserts: ToolCallInsertRow[] = [];
   private links: Array<{ teamId: string; link: ToolCallLink }> = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+
+  // tool_calls.traffic_log_id (and link result_traffic_log_id) are FKs into
+  // traffic_logs. Those parent rows are buffered in the LogWriter, which flushes
+  // on its own independent timer/threshold. We hold a reference so flush() can
+  // commit the parents first and never violate the FK.
+  constructor(private readonly log: LogWriter) {}
 
   private startTimer() {
     if (this.timer) return;
@@ -34,6 +40,16 @@ export class CloudToolCallWriter implements ToolCallWriter {
     const linkBatch = this.links;
     this.inserts = [];
     this.links = [];
+
+    // Commit the parent traffic_logs first. Both the inserts (traffic_log_id)
+    // and the links (result_traffic_log_id) FK into traffic_logs, whose rows
+    // sit in the LogWriter's buffer until it flushes on its own schedule. We
+    // capture our batches above *before* awaiting this, so any row pushed
+    // during the flush (whose parent isn't in this drain) waits for the next
+    // cycle rather than racing ahead of its traffic_log. Without this, a
+    // tool_calls insert can reach Postgres before its parent and fail the FK
+    // with 23503.
+    await this.log.flush();
 
     // Inserts — fire and forget, log on error.
     if (insertBatch.length > 0) {

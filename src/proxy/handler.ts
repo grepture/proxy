@@ -740,8 +740,9 @@ function logTraffic(
   const origDiffers = originalBody && originalBody !== ctx.body;
 
   const entry: TrafficLogEntry = {
-    // Pre-assign the id so downstream writers (tool_calls) can FK to it in
-    // the same flush cycle.
+    // Pre-assign the id so downstream writers (tool_calls) can FK to it. The
+    // tool-call writer flushes this log writer before its own inserts, so the
+    // parent row is committed first regardless of buffer timing.
     id: crypto.randomUUID(),
     user_id: ctx.auth.user_id,
     team_id: ctx.auth.team_id,

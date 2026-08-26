@@ -204,6 +204,8 @@ export async function proxyHandler(c: Context): Promise<Response> {
     metadata,
     seq,
     sessionId,
+    budgetSpendPct: null,
+    routedFrom: null,
   };
 
   // --- Debug trace (opt-in, default off) ---
@@ -246,6 +248,10 @@ export async function proxyHandler(c: Context): Promise<Response> {
   }
   for (const m of budgetMatches) {
     const limitMicroCents = m.def.limit_cents * 10_000;
+    if (limitMicroCents > 0) {
+      const pct = (m.spent_micro_cents / limitMicroCents) * 100;
+      ctx.budgetSpendPct = Math.max(ctx.budgetSpendPct ?? 0, pct);
+    }
     if (m.spent_micro_cents >= limitMicroCents) {
       c.header("X-Grepture-Budget-Status", "exceeded");
       return c.json(
@@ -462,6 +468,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
       if (aiSampling && aiSampling.limit !== Infinity) {
         responseHeaders.set("x-grepture-ai-sampling", `${aiSampling.used}/${aiSampling.limit}`);
       }
+      setRoutedModelHeader(responseHeaders, ctx);
 
       // Fire-and-forget: log after stream completes, re-redacting PII
       accumulated.then(async (fullBody) => {
@@ -612,6 +619,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
   if (aiSampling && aiSampling.limit !== Infinity) {
     responseHeaders.set("x-grepture-ai-sampling", `${aiSampling.used}/${aiSampling.limit}`);
   }
+  setRoutedModelHeader(responseHeaders, ctx);
 
   return new Response(forwardResult.mode === "buffered" ? forwardResult.body : "", {
     status: forwardResult.status,
@@ -720,6 +728,14 @@ function redactUrl(url: string): string {
 
 import type { LogWriter } from "../providers/types";
 
+/** Tell the caller a route_model action swapped the model, e.g. `gpt-4o->gpt-4o-mini`. */
+function setRoutedModelHeader(headers: Headers, ctx: RequestContext): void {
+  if (!ctx.routedFrom) return;
+  const to = (ctx.parsedBody as { model?: unknown } | null)?.model;
+  if (typeof to !== "string") return;
+  headers.set("x-grepture-routed-model", `${ctx.routedFrom}->${to}`);
+}
+
 function logTraffic(
   log: LogWriter,
   ctx: RequestContext,
@@ -763,6 +779,7 @@ function logTraffic(
     cache_write_tokens: usage?.cache_write_tokens ?? null,
     model: usage?.model ?? null,
     provider: usage?.provider ?? null,
+    requested_model: ctx.routedFrom,
     original_request_body: zeroData ? null : (origDiffers ? originalBody! : null),
     trace_id: ctx.traceId,
     parent_span_id: ctx.parentSpanId,

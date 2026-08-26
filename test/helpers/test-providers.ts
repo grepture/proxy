@@ -12,6 +12,8 @@ import type {
   RateQuotaChecker,
   ProviderKeyResolver,
   ResolvedProviderKey,
+  BudgetChecker,
+  BudgetMatch,
 } from "../../src/providers/types";
 import type { AuthInfo, Rule, TrafficLogEntry } from "../../src/types";
 
@@ -72,9 +74,18 @@ class StubAuth implements AuthProvider {
 }
 
 class StubRules implements RuleProvider {
+  constructor(private rules: Rule[] = []) {}
   async loadRules(_teamId: string): Promise<Rule[]> {
-    return [];
+    return this.rules;
   }
+}
+
+class StubBudgets implements BudgetChecker {
+  constructor(private matches: BudgetMatch[] = []) {}
+  async match(_teamId: string, _apiSettingsId: string, _label: string | null): Promise<BudgetMatch[]> {
+    return this.matches;
+  }
+  async recordSpend(_matches: BudgetMatch[], _cost: number): Promise<void> {}
 }
 
 class StubLog implements LogWriter {
@@ -124,10 +135,19 @@ class StubRateQuota implements RateQuotaChecker {
 
 // ─── Factory ───────────────────────────────────────────────────────────────
 
-export function createTestProviders(keys: ResolvedProviderKey[] = []): Providers {
+export type TestProviderOptions = {
+  rules?: Rule[];
+  budgets?: BudgetMatch[];
+};
+
+export function createTestProviders(
+  keys: ResolvedProviderKey[] = [],
+  opts: TestProviderOptions = {},
+): Providers {
   return {
     auth: new StubAuth(),
-    rules: new StubRules(),
+    rules: new StubRules(opts.rules),
+    budgets: new StubBudgets(opts.budgets),
     log: new StubLog(),
     vault: new StubVault(),
     rateLimiter: new StubRateLimiter(),

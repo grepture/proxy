@@ -6,6 +6,7 @@ import { executeRedactField } from "./redact-field";
 import { executeBlockRequest } from "./block-request";
 import { executeLogOnly } from "./log-only";
 import { executeRestrictTools } from "./restrict-tools";
+import { executeRouteModel } from "./route-model";
 import type { RuleAction, RequestContext } from "../types";
 import type { TokenVault } from "../providers/types";
 
@@ -53,5 +54,12 @@ export function registerBuiltinActions(): void {
     type: "restrict_tools",
     execute: (ctx, action) =>
       executeRestrictTools(ctx, action as Parameters<typeof executeRestrictTools>[1]),
+  });
+
+  registerAction({
+    type: "route_model",
+    async execute(ctx, action) {
+      return executeRouteModel(ctx, action as Parameters<typeof executeRouteModel>[1]);
+    },
   });
 }

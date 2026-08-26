@@ -81,6 +81,18 @@ export type RestrictToolsAction = ActionBase & {
   block_message: string;
 };
 
+export type RouteModelAction = ActionBase & {
+  type: "route_model";
+  // Model to send upstream instead of the requested one. Must be served by the
+  // same provider as the original request — the provider key chain is resolved
+  // from the target URL before rules run.
+  target_model: string;
+  // "always": every matching request. "budget_over_pct": only once the most
+  // constrained matching budget has spent at least `budget_pct` of its limit.
+  when: "always" | "budget_over_pct";
+  budget_pct: number;
+};
+
 export type AiDetectPiiAction = ActionBase & {
   type: "ai_detect_pii";
   categories: AiPiiCategory[];
@@ -137,7 +149,8 @@ export type RuleAction =
   | AiDetectToxicityAction
   | AiDetectDlpAction
   | AiDetectComplianceAction
-  | RestrictToolsAction;
+  | RestrictToolsAction
+  | RouteModelAction;
 
 export type RuleCondition = {
   id: string;
@@ -190,6 +203,8 @@ export type TrafficLogEntry = {
   cache_write_tokens?: number | null;
   model?: string | null;
   provider?: string | null;
+  /** Model the caller asked for when a route_model action swapped it. */
+  requested_model?: string | null;
   original_request_body?: string | null;
   request_body_r2_key?: string | null;
   response_body_r2_key?: string | null;
@@ -325,6 +340,11 @@ export type RequestContext = {
   metadata: Record<string, string> | null;
   seq: number | null;
   sessionId: string | null;
+  /** Highest spend ratio (0-100+) across budgets matching this request, or
+   * null when no budget matches. Consumed by route_model. */
+  budgetSpendPct: number | null;
+  /** Original model when a route_model action rewrote it. */
+  routedFrom: string | null;
   /** Which pipeline pass this context represents. Unset/"input" = request pass;
    * "output" = response pass (set by the handler on the response-oriented context).
    * Lets a single action behave differently per direction. */

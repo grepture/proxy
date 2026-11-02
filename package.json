@@ -33,12 +33,12 @@
     "pm2:restart": "pm2 restart grepture-proxy"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.0",
-    "@upstash/redis": "^1.34.0",
-    "hono": "^4.7.0"
+    "@supabase/supabase-js": "^2.118.0",
+    "@upstash/redis": "^1.40.0",
+    "hono": "^4.13.16"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.0",
+    "@types/bun": "^1.4.4",
     "typescript": "^5.9.3"
   }
 }

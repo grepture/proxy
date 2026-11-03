@@ -393,7 +393,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
       ...allRules
         .filter((r) => inputRulesApplied.includes(r.id))
         .map((r) => r.timeout_seconds * 1000)
-        .concat([60_000]),
+        .concat([config.requestTimeoutSeconds * 1000]),
     );
 
     // Capture post-rules, pre-forward body for the debug view — this is exactly

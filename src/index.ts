@@ -131,6 +131,8 @@ for (const pluginPath of config.plugins) {
 
 const server = Bun.serve({
   port: config.port,
+  // Bun's default (10s) drops slow upstreams and silent streams mid-response.
+  idleTimeout: config.requestTimeoutSeconds,
   fetch: app.fetch,
 });
 

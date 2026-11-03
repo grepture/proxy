@@ -1,26 +1,6 @@
 import type { TokenVault } from "../providers/types";
+import { transformStrings, type StringTransform } from "./transform-strings";
 import type { FindReplaceAction, RequestContext, ActionResult } from "../types";
-
-type StringTransform = (s: string) => Promise<string>;
-
-async function transformStrings(value: unknown, transform: StringTransform): Promise<unknown> {
-  if (typeof value === "string") return transform(value);
-  if (Array.isArray(value)) {
-    const out: unknown[] = new Array(value.length);
-    for (let i = 0; i < value.length; i++) {
-      out[i] = await transformStrings(value[i], transform);
-    }
-    return out;
-  }
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) {
-      out[k] = await transformStrings(v, transform);
-    }
-    return out;
-  }
-  return value;
-}
 
 export async function executeFindReplace(
   ctx: RequestContext,
@@ -30,9 +10,13 @@ export async function executeFindReplace(
   let pattern: RegExp;
 
   if (action.is_regex) {
-    const flags = action.case_sensitive ? "g" : "gi";
+    // JS has no leading inline-flag syntax; patterns copied from PCRE/Go
+    // libraries often start with (?i), so translate it to the `i` flag.
+    const inlineInsensitive = action.find.startsWith("(?i)");
+    const source = inlineInsensitive ? action.find.slice(4) : action.find;
+    const flags = action.case_sensitive && !inlineInsensitive ? "g" : "gi";
     try {
-      pattern = new RegExp(action.find, flags);
+      pattern = new RegExp(source, flags);
     } catch {
       console.error(`Invalid regex in find_replace action: ${action.find}`);
       return {};

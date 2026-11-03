@@ -1,0 +1,117 @@
+import { describe, it, expect } from "bun:test";
+import { executeRedactPii } from "../src/actions/redact-pii";
+import { executeFindReplace } from "../src/actions/find-replace";
+import type { RedactPiiAction, FindReplaceAction, RequestContext, AuthInfo } from "../src/types";
+import type { TokenVault } from "../src/providers/types";
+
+function makeCtx(body: unknown): RequestContext {
+  const raw = JSON.stringify(body);
+  return {
+    requestId: "r", auth: { team_id: "t", user_id: "u", tier: "free", fallback_mode: "error", zero_data_mode: false } as AuthInfo,
+    method: "POST", targetUrl: "https://api.anthropic.com/v1/messages",
+    headers: {}, body: raw, parsedBody: JSON.parse(raw),
+    startedAt: Date.now(), traceId: null, label: null, metadata: null, seq: null, sessionId: null,
+  };
+}
+
+const noopVault: TokenVault = { async set() {}, async get() { return null; } };
+
+const PHONE_MASK: RedactPiiAction = {
+  id: "a1", enabled: true, type: "redact_pii",
+  categories: ["phone"], replacement: "placeholder", mode: "mask_and_restore",
+  token_prefix: "pii_", ttl_seconds: 60,
+};
+
+const ANTHROPIC_ID = "call_6172146963204e00a4896221";
+const OPENAI_ID = "call_17205551234";
+
+const anthropicBody = {
+  model: "claude-sonnet-5-5",
+  messages: [
+    { role: "user", content: "Look up 555-123-4567" },
+    { role: "assistant", content: [{ type: "tool_use", id: ANTHROPIC_ID, name: "lookup", input: { phone: "555-123-4567" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: ANTHROPIC_ID, content: "Owner of 555-123-4567: Jane" }] },
+  ],
+};
+
+const openaiBody = {
+  model: "gpt-4o",
+  messages: [
+    { role: "assistant", content: null, tool_calls: [{ id: OPENAI_ID, type: "function", function: { name: "lookup", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: OPENAI_ID, content: "call 555-123-4567" },
+  ],
+};
+
+const responsesBody = {
+  input: [
+    { type: "function_call", id: "fc_17205551234", call_id: OPENAI_ID, name: "lookup", arguments: "{}" },
+    { type: "function_call_output", call_id: OPENAI_ID, output: "555-123-4567" },
+  ],
+};
+
+describe("tool call IDs are excluded from detection", () => {
+  it("redact_pii leaves Anthropic tool_use.id / tool_result.tool_use_id intact", async () => {
+    const ctx = makeCtx(anthropicBody);
+    await executeRedactPii(ctx, PHONE_MASK, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.messages[1].content[0].id).toBe(ANTHROPIC_ID);
+    expect(out.messages[2].content[0].tool_use_id).toBe(ANTHROPIC_ID);
+    // Real PII next to the IDs is still masked
+    expect(out.messages[0].content).not.toContain("555-123-4567");
+    expect(out.messages[1].content[0].input.phone).not.toContain("555-123-4567");
+    expect(out.messages[2].content[0].content).not.toContain("555-123-4567");
+  });
+
+  it("redact_pii leaves OpenAI tool_calls[].id / tool_call_id intact", async () => {
+    const ctx = makeCtx(openaiBody);
+    await executeRedactPii(ctx, PHONE_MASK, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.messages[0].tool_calls[0].id).toBe(OPENAI_ID);
+    expect(out.messages[1].tool_call_id).toBe(OPENAI_ID);
+    expect(out.messages[1].content).not.toContain("555-123-4567");
+  });
+
+  it("redact_pii leaves Responses API id / call_id intact", async () => {
+    const ctx = makeCtx(responsesBody);
+    await executeRedactPii(ctx, PHONE_MASK, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.input[0].id).toBe("fc_17205551234");
+    expect(out.input[0].call_id).toBe(OPENAI_ID);
+    expect(out.input[1].call_id).toBe(OPENAI_ID);
+    expect(out.input[1].output).not.toContain("555-123-4567");
+  });
+
+  it("still redacts an `id` field inside tool input (user data, not a tool ID)", async () => {
+    const ctx = makeCtx({
+      messages: [{ role: "assistant", content: [{ type: "tool_use", id: ANTHROPIC_ID, name: "x", input: { id: "555-123-4567" } }] }],
+    });
+    await executeRedactPii(ctx, PHONE_MASK, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.messages[0].content[0].input.id).not.toContain("555-123-4567");
+  });
+
+  it("find_replace leaves tool IDs intact", async () => {
+    const action: FindReplaceAction = {
+      id: "a2", enabled: true, type: "find_replace", find: "\\d{6,}", replace: "[N]",
+      is_regex: true, case_sensitive: true, mode: "redact", token_prefix: "", ttl_seconds: 0,
+    };
+    const ctx = makeCtx(openaiBody);
+    await executeFindReplace(ctx, action, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.messages[0].tool_calls[0].id).toBe(OPENAI_ID);
+    expect(out.messages[1].tool_call_id).toBe(OPENAI_ID);
+  });
+});
+
+describe("find_replace inline (?i) flag", () => {
+  it("treats a leading (?i) as case-insensitive instead of rejecting the regex", async () => {
+    const action: FindReplaceAction = {
+      id: "a3", enabled: true, type: "find_replace",
+      find: "(?i)pinecone[_-]?(?:api[_-]?)?key[\"']?\\s*[:=]\\s*[\"']?[A-Za-z0-9_-]{32,}[\"']?",
+      replace: "[PINECONE_KEY]", is_regex: true, case_sensitive: true, mode: "redact",
+    };
+    const ctx = makeCtx({ messages: [{ role: "user", content: "PINECONE_API_KEY=abcdefghijklmnopqrstuvwxyz123456" }] });
+    await executeFindReplace(ctx, action, noopVault);
+    expect(JSON.parse(ctx.body).messages[0].content).toBe("[PINECONE_KEY]");
+  });
+});

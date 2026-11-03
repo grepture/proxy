@@ -1,4 +1,5 @@
 import type { TokenVault } from "../providers/types";
+import { transformStrings, type StringTransform } from "./transform-strings";
 import { detectPii } from "../pii/detector";
 import { placeholders, replacePii } from "../pii/replacer";
 import type { RedactPiiAction, RequestContext, ActionResult } from "../types";
@@ -17,23 +18,6 @@ function debugReplacementLabel(
   return "[HASHED]";
 }
 
-type StringTransform = (s: string) => Promise<string>;
-
-/** Walk only the string leaves of a parsed JSON value, applying `transform`. */
-async function transformStrings(value: unknown, transform: StringTransform): Promise<unknown> {
-  if (typeof value === "string") return transform(value);
-  if (Array.isArray(value)) {
-    const out: unknown[] = new Array(value.length);
-    for (let i = 0; i < value.length; i++) out[i] = await transformStrings(value[i], transform);
-    return out;
-  }
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = await transformStrings(v, transform);
-    return out;
-  }
-  return value;
-}
 
 export async function executeRedactPii(
   ctx: RequestContext,

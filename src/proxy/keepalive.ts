@@ -123,8 +123,16 @@ export function sseErrorEvent(provider: "openai" | "anthropic" | "gemini" | null
     return `event: error\ndata: ${JSON.stringify(payload)}\n\n`;
   }
 
-  const error = isRecord(parsed) && parsed.error !== undefined ? parsed.error : { message, code: status };
-  return `data: ${JSON.stringify({ error })}\n\n`;
+  return `data: ${JSON.stringify({ error: openAiError(parsed, message, status) })}\n\n`;
+}
+
+// The proxy's own errors are `{ error: "…", detail?: "…" }`; SDKs read
+// `error.message`, so string errors are wrapped to keep their text visible.
+function openAiError(parsed: unknown, fallback: string, status: number): unknown {
+  if (!isRecord(parsed) || parsed.error === undefined) return { message: fallback, code: status };
+  if (typeof parsed.error !== "string") return parsed.error;
+  const detail = typeof parsed.detail === "string" ? `: ${parsed.detail}` : "";
+  return { message: `${parsed.error}${detail}`, code: status };
 }
 
 /**

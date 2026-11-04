@@ -7,6 +7,7 @@ import { runPipeline, type PipelineResult } from "../actions/pipeline";
 import { forwardRequest, type ForwardResult } from "./forward";
 import { assertSafeTarget, SsrfBlockedError } from "./ssrf-guard";
 import { forwardWithFallback } from "./forward-with-fallback";
+import { parseTimeoutHeader, resolveTimeoutMs } from "./timeout";
 import { KEEPALIVE_GRACE_MS, KEEPALIVE_INTERVAL_MS, deferredStreamingResult, settleWithin, withHeartbeat } from "./keepalive";
 import { parseTraceparent } from "./traceparent";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
@@ -97,10 +98,17 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
   const rulesPromise = providers.rules.loadRules(auth.team_id);
 
+  const timeoutHeader = parseTimeoutHeader(c.req.header("x-grepture-timeout"));
+  if (timeoutHeader && "error" in timeoutHeader) {
+    return c.json({ error: timeoutHeader.error }, 400);
+  }
+  const requestedTimeoutSeconds = timeoutHeader?.seconds ?? null;
+
   // Provider key resolution: only fetch if the caller didn't supply one explicitly.
   // The user-supplied X-Grepture-Auth-Forward header always wins.
   // We resolve the entire fallback chain so the forward step can retry on 5xx.
   const callerSuppliedAuthForward = c.req.header("x-grepture-auth-forward");
+
   const detectedProvider = callerSuppliedAuthForward ? null : detectProvider(targetUrl);
   const providerKeyChainPromise = detectedProvider
     ? providers.providerKeys.resolveChain(auth.team_id, detectedProvider).catch((err: unknown) => {
@@ -401,11 +409,10 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
     // --- Forward ---
     disableIdleTimeout(c);
-    const timeoutMs = Math.min(
-      ...allRules
-        .filter((r) => inputRulesApplied.includes(r.id))
-        .map((r) => r.timeout_seconds * 1000)
-        .concat([config.requestTimeoutSeconds * 1000]),
+    const timeoutMs = resolveTimeoutMs(
+      allRules.filter((r) => inputRulesApplied.includes(r.id)).map((r) => r.timeout_seconds),
+      requestedTimeoutSeconds,
+      config.requestTimeoutSeconds,
     );
 
     // Capture post-rules, pre-forward body for the debug view — this is exactly

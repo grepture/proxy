@@ -60,6 +60,10 @@ export async function forwardRequest(
       headers: outboundHeaders,
       body: hasBody ? ctx.body : undefined,
       signal: controller.signal,
+      // Bun drops sockets idle for 5 minutes by default, cutting long silent
+      // waits short of timeoutMs. Disable it; the AbortController above bounds
+      // the wait. (Numeric values are ignored before Bun 1.4, only false works.)
+      timeout: false,
     });
 
     clearTimeout(timeout);

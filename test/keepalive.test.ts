@@ -74,7 +74,12 @@ describe("sseErrorEvent", () => {
 
   it("wraps the proxy's own gateway timeout", () => {
     const event = sseErrorEvent("openai", 504, JSON.stringify({ error: "Gateway timeout" }));
-    expect(JSON.parse(event.slice(6))).toEqual({ error: "Gateway timeout" });
+    expect(JSON.parse(event.slice(6))).toEqual({ error: { message: "Gateway timeout", code: 504 } });
+  });
+
+  it("keeps the detail of the proxy's own errors", () => {
+    const event = sseErrorEvent(null, 502, JSON.stringify({ error: "Failed to reach target", detail: "socket closed" }));
+    expect(JSON.parse(event.slice(6))).toEqual({ error: { message: "Failed to reach target: socket closed", code: 502 } });
   });
 });
 

@@ -131,8 +131,10 @@ for (const pluginPath of config.plugins) {
 
 const server = Bun.serve({
   port: config.port,
-  // Bun's default (10s) drops slow upstreams and silent streams mid-response.
-  idleTimeout: config.requestTimeoutSeconds,
+  // Bun's default (10s) drops slow clients; 255 is its ceiling. Proxied
+  // requests lift this once the body is read (see proxy handler), so silent
+  // upstream waits are bounded by requestTimeoutSeconds instead.
+  idleTimeout: 255,
   fetch: app.fetch,
 });
 

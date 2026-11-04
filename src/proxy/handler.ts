@@ -7,6 +7,7 @@ import { runPipeline, type PipelineResult } from "../actions/pipeline";
 import { forwardRequest, type ForwardResult } from "./forward";
 import { assertSafeTarget, SsrfBlockedError } from "./ssrf-guard";
 import { forwardWithFallback } from "./forward-with-fallback";
+import { KEEPALIVE_GRACE_MS, KEEPALIVE_INTERVAL_MS, deferredStreamingResult, settleWithin, withHeartbeat } from "./keepalive";
 import { parseTraceparent } from "./traceparent";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
@@ -21,6 +22,16 @@ import { resolveMessages } from "../prompts/resolver";
 import { handleToolCalls } from "./tool-calls-extract";
 import { estimateCostMicroCents } from "../pricing";
 import type { BudgetMatch } from "../providers/types";
+
+// Bun.serve's connection idle timeout caps out at 255s, which would cut off a
+// silent upstream wait before our own (longer) upstream timeout fires. c.env is
+// the Bun server in production; absent in tests that call app.fetch directly.
+function disableIdleTimeout(c: Context): void {
+  const server: unknown = c.env;
+  if (server && typeof server === "object" && "timeout" in server && typeof server.timeout === "function") {
+    server.timeout(c.req.raw, 0);
+  }
+}
 
 export async function proxyHandler(c: Context): Promise<Response> {
   const startedAt = performance.now();
@@ -389,6 +400,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     }
 
     // --- Forward ---
+    disableIdleTimeout(c);
     const timeoutMs = Math.min(
       ...allRules
         .filter((r) => inputRulesApplied.includes(r.id))
@@ -406,13 +418,17 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
     // Use forwardWithFallback when we have a stored key chain (enables automatic
     // failover on 5xx). When the caller supplied their own key, use the simple path.
-    if (!callerSuppliedAuthForward && providerKeyChain.length > 0) {
-      const fallbackResult = await forwardWithFallback(ctx, providerKeyChain, timeoutMs, streamingRequested);
-      providerKeyIdUsed = fallbackResult.keyIdUsed;
-      forwardResult = fallbackResult;
-    } else {
-      forwardResult = await forwardRequest(ctx, timeoutMs, streamingRequested);
-    }
+    const pending: Promise<ForwardResult> = !callerSuppliedAuthForward && providerKeyChain.length > 0
+      ? forwardWithFallback(ctx, providerKeyChain, timeoutMs, streamingRequested).then((r) => {
+          providerKeyIdUsed = r.keyIdUsed;
+          return r;
+        })
+      : forwardRequest(ctx, timeoutMs, streamingRequested);
+
+    // Streaming callers whose upstream is still silent after the grace period
+    // get a committed SSE response with keep-alives (see keepalive.ts).
+    const settled = streamingRequested ? await settleWithin(pending, KEEPALIVE_GRACE_MS) : await pending;
+    forwardResult = settled ?? deferredStreamingResult(pending, detectProvider(ctx.targetUrl));
 
     if (ctx.debugTrace) {
       ctx.debugTrace.timings_ms.upstream = Math.round(performance.now() - upstreamStart);
@@ -492,7 +508,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         console.error(`Streaming log error [${requestId}]:`, err);
       });
 
-      return new Response(stream, {
+      return new Response(withHeartbeat(stream, KEEPALIVE_INTERVAL_MS, settled === null), {
         status: forwardResult.status,
         headers: responseHeaders,
       });

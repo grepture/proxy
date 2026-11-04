@@ -107,7 +107,7 @@ const ossConfig = `export const config = {
   plugins: process.env.GREPTURE_PLUGINS ? process.env.GREPTURE_PLUGINS.split(",").map((p) => p.trim()) : [],
   port: parseInt(process.env.PORT || "4001", 10),
   maxBodySize: 10 * 1024 * 1024, // 10MB
-  requestTimeoutSeconds: 255,
+  requestTimeoutSeconds: parseInt(process.env.GREPTURE_REQUEST_TIMEOUT_SECONDS || "600", 10),
 } as const;
 `;
 

@@ -49,6 +49,11 @@ export function createResponsesToChatStream(
             choices: [{ index: 0, delta: { content: json.delta }, finish_reason: null }],
           });
           controller.enqueue(encoder.encode(`data: ${chunk}\n\n`));
+        } else if (eventType === "error" || json.error !== undefined) {
+          // Surface upstream errors in Chat Completions shape instead of
+          // dropping them, so the client sees why the stream ended.
+          const error = json.error ?? { message: json.message, code: json.code };
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error })}\n\n`));
         } else if (eventType === "response.completed" || eventType === "response.done") {
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         }

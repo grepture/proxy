@@ -26,10 +26,9 @@ export const config = {
   geminiTarget: process.env.GREPTURE_GEMINI_TARGET || "https://generativelanguage.googleapis.com",
   port: parseInt(process.env.PORT || "4001", 10),
   maxBodySize: 10 * 1024 * 1024, // 10MB
-  // Max time a request may wait on the upstream, and max silence on an open
-  // connection. 255s is Bun.serve's idleTimeout ceiling; large prompts can take
-  // minutes before the first byte.
-  requestTimeoutSeconds: 255,
+  // Max time a request may wait on the upstream for response headers. Large
+  // prompts can take minutes before the first byte. Rules can only lower this.
+  requestTimeoutSeconds: parseInt(process.env.GREPTURE_REQUEST_TIMEOUT_SECONDS || "600", 10),
 
   ai: {
     enabled: process.env.AI_ENABLED === "true",

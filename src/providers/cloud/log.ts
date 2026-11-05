@@ -80,12 +80,25 @@ export class CloudLogWriter implements LogWriter {
     ]);
   }
 
-  private async flushTraffic(): Promise<void> {
-    if (this.buffer.length === 0) return;
+  // Traffic batches drained from the buffer but not yet committed. flush()
+  // must await these too: a timer/threshold flush may have already taken a
+  // parent row (and be stuck in R2 offload) when a dependent writer such as
+  // CloudToolCallWriter calls flush() — an empty buffer doesn't mean committed.
+  private inFlightTraffic = new Set<Promise<void>>();
 
-    const batch = this.buffer;
-    this.buffer = [];
+  private flushTraffic(): Promise<void> {
+    const pending = [...this.inFlightTraffic];
+    if (this.buffer.length > 0) {
+      const batch = this.buffer;
+      this.buffer = [];
+      const p = this.writeTraffic(batch).finally(() => this.inFlightTraffic.delete(p));
+      this.inFlightTraffic.add(p);
+      pending.push(p);
+    }
+    return Promise.all(pending).then(() => undefined);
+  }
 
+  private async writeTraffic(batch: TrafficLogEntry[]): Promise<void> {
     await offloadLargeBodies(batch);
 
     try {

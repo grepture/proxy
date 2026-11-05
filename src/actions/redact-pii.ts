@@ -1,3 +1,4 @@
+import { maskToken } from "../pii/token";
 import type { TokenVault } from "../providers/types";
 import { transformStrings, type StringTransform } from "./transform-strings";
 import { detectPii } from "../pii/detector";
@@ -39,7 +40,7 @@ export async function executeRedactPii(
       let result = s;
       for (let i = matches.length - 1; i >= 0; i--) {
         const m = matches[i];
-        const token = `${prefix}${crypto.randomUUID()}`;
+        const token = maskToken(ctx, prefix, m.match);
         await vault.set(ctx.auth.team_id, token, m.match, ttl);
         result = result.slice(0, m.start) + token + result.slice(m.end);
         if (ctx.debugTrace) {

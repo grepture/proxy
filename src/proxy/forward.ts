@@ -8,6 +8,7 @@ export async function forwardRequest(
   ctx: RequestContext,
   timeoutMs: number,
   streamingRequested = false,
+  clientSignal?: AbortSignal,
 ): Promise<ForwardResult> {
   // Build outbound headers
   const outboundHeaders: Record<string, string> = {};
@@ -59,7 +60,8 @@ export async function forwardRequest(
       method: ctx.method,
       headers: outboundHeaders,
       body: hasBody ? ctx.body : undefined,
-      signal: controller.signal,
+      // A caller disconnect aborts the upstream request too.
+      signal: clientSignal ? AbortSignal.any([controller.signal, clientSignal]) : controller.signal,
       // Bun drops sockets idle for 5 minutes by default, cutting long silent
       // waits short of timeoutMs. Disable it; the AbortController above bounds
       // the wait. (Numeric values are ignored before Bun 1.4, only false works.)
@@ -102,6 +104,9 @@ export async function forwardRequest(
     };
   } catch (err) {
     clearTimeout(timeout);
+    if (clientSignal?.aborted) {
+      return { mode: "buffered", status: 499, headers: {}, body: JSON.stringify({ error: "Client closed request" }) };
+    }
     if (err instanceof DOMException && err.name === "AbortError") {
       return { mode: "buffered", status: 504, headers: {}, body: JSON.stringify({ error: "Gateway timeout" }) };
     }

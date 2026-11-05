@@ -46,6 +46,7 @@ export async function forwardWithFallback(
   keys: ResolvedProviderKey[],
   timeoutMs: number,
   streamingRequested: boolean,
+  clientSignal?: AbortSignal,
 ): Promise<FallbackForwardResult> {
   const originalProvider = detectProvider(ctx.targetUrl) as Format | null;
   let lastResult: FallbackForwardResult | null = null;
@@ -101,7 +102,7 @@ export async function forwardWithFallback(
     // `Bearer <key>` — forward.ts strips the prefix for Anthropic's x-api-key.
     ctx.headers["x-grepture-auth-forward"] = `Bearer ${key.decrypted}`;
 
-    const result = await forwardRequest(ctx, timeoutMs, streamingRequested);
+    const result = await forwardRequest(ctx, timeoutMs, streamingRequested, clientSignal);
 
     // Restore ctx fields for the next iteration (in case we need to fall back further)
     if (isCrossProvider) {

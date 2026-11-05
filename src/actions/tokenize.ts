@@ -1,3 +1,4 @@
+import { maskToken } from "../pii/token";
 import type { TokenVault } from "../providers/types";
 import type { TokenizeAction, RequestContext, ActionResult } from "../types";
 
@@ -44,7 +45,7 @@ export async function executeTokenize(
     if (original === undefined || original === null) continue;
 
     const originalStr = typeof original === "string" ? original : JSON.stringify(original);
-    const token = `${action.token_prefix}${crypto.randomUUID()}`;
+    const token = maskToken(ctx, action.token_prefix, originalStr);
 
     // Store in vault
     await vault.set(ctx.auth.team_id, token, originalStr, action.ttl_seconds);

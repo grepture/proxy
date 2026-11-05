@@ -100,6 +100,9 @@ export type AiDetectPiiAction = ActionBase & {
   mode: "redact" | "mask_and_restore";
   token_prefix: string;
   ttl_seconds: number;
+  /** Scan all conversation text instead of the first few thousand characters.
+   * Slower: adds roughly 65ms per 1,000 characters scanned. */
+  scan_full_body?: boolean;
 };
 
 export type AiDetectInjectionAction = ActionBase & {
@@ -340,6 +343,9 @@ export type RequestContext = {
   metadata: Record<string, string> | null;
   seq: number | null;
   sessionId: string | null;
+  /** From X-Grepture-Token-Scope: makes mask-and-restore tokens deterministic
+   * within this scope (see pii/token.ts). */
+  tokenScope?: string | null;
   /** Highest spend ratio (0-100+) across budgets matching this request, or
    * null when no budget matches. Consumed by route_model. */
   budgetSpendPct: number | null;

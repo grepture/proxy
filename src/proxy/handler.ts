@@ -8,7 +8,8 @@ import { forwardRequest, type ForwardResult } from "./forward";
 import { assertSafeTarget, SsrfBlockedError } from "./ssrf-guard";
 import { forwardWithFallback } from "./forward-with-fallback";
 import { parseTimeoutHeader, resolveTimeoutMs } from "./timeout";
-import { KEEPALIVE_GRACE_MS, KEEPALIVE_INTERVAL_MS, deferredStreamingResult, settleWithin, withHeartbeat } from "./keepalive";
+import { parseTokenScopeHeader } from "../pii/token";
+import { KEEPALIVE_GRACE_MS, KEEPALIVE_INTERVAL_MS, deferredStreamingResult, parseKeepaliveHeader, settleWithin, sseErrorFormat, withHeartbeat } from "./keepalive";
 import { parseTraceparent } from "./traceparent";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
@@ -103,6 +104,16 @@ export async function proxyHandler(c: Context): Promise<Response> {
     return c.json({ error: timeoutHeader.error }, 400);
   }
   const requestedTimeoutSeconds = timeoutHeader?.seconds ?? null;
+
+  const tokenScopeHeader = parseTokenScopeHeader(c.req.header("x-grepture-token-scope"));
+  if ("error" in tokenScopeHeader) {
+    return c.json({ error: tokenScopeHeader.error }, 400);
+  }
+
+  const keepaliveHeader = parseKeepaliveHeader(c.req.header("x-grepture-keepalive"));
+  if ("error" in keepaliveHeader) {
+    return c.json({ error: keepaliveHeader.error }, 400);
+  }
 
   // Provider key resolution: only fetch if the caller didn't supply one explicitly.
   // The user-supplied X-Grepture-Auth-Forward header always wins.
@@ -223,6 +234,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     metadata,
     seq,
     sessionId,
+    tokenScope: tokenScopeHeader.scope,
     budgetSpendPct: null,
     routedFrom: null,
   };
@@ -425,17 +437,23 @@ export async function proxyHandler(c: Context): Promise<Response> {
 
     // Use forwardWithFallback when we have a stored key chain (enables automatic
     // failover on 5xx). When the caller supplied their own key, use the simple path.
+    // Abort the upstream request if the caller disconnects before it answers.
+    const clientAbort = new AbortController();
+    c.req.raw.signal.addEventListener("abort", () => clientAbort.abort(), { once: true });
     const pending: Promise<ForwardResult> = !callerSuppliedAuthForward && providerKeyChain.length > 0
-      ? forwardWithFallback(ctx, providerKeyChain, timeoutMs, streamingRequested).then((r) => {
+      ? forwardWithFallback(ctx, providerKeyChain, timeoutMs, streamingRequested, clientAbort.signal).then((r) => {
           providerKeyIdUsed = r.keyIdUsed;
           return r;
         })
-      : forwardRequest(ctx, timeoutMs, streamingRequested);
+      : forwardRequest(ctx, timeoutMs, streamingRequested, clientAbort.signal);
 
     // Streaming callers whose upstream is still silent after the grace period
-    // get a committed SSE response with keep-alives (see keepalive.ts).
-    const settled = streamingRequested ? await settleWithin(pending, KEEPALIVE_GRACE_MS) : await pending;
-    forwardResult = settled ?? deferredStreamingResult(pending, detectProvider(ctx.targetUrl));
+    // get a committed SSE response with keep-alives (see keepalive.ts), unless
+    // they opted out with X-Grepture-Keepalive: off.
+    const settled = streamingRequested && keepaliveHeader.enabled
+      ? await settleWithin(pending, KEEPALIVE_GRACE_MS)
+      : await pending;
+    forwardResult = settled ?? deferredStreamingResult(pending, sseErrorFormat(ctx.targetUrl), () => clientAbort.abort());
 
     if (ctx.debugTrace) {
       ctx.debugTrace.timings_ms.upstream = Math.round(performance.now() - upstreamStart);

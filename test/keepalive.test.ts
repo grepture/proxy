@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import { deferredStreamingResult, settleWithin, sseErrorEvent, withHeartbeat } from "../src/proxy/keepalive";
+import { EARLY_STREAM_HEADER, deferredStreamingResult, parseKeepaliveHeader, settleWithin, sseErrorEvent, sseErrorFormat, withHeartbeat } from "../src/proxy/keepalive";
+import { forwardRequest } from "../src/proxy/forward";
+import type { RequestContext } from "../src/types";
 import { createResponsesToChatStream } from "../src/proxy/responses-to-chat-stream";
 import type { ForwardResult } from "../src/proxy/forward";
 
@@ -55,54 +57,152 @@ describe("withHeartbeat", () => {
   });
 });
 
+describe("parseKeepaliveHeader", () => {
+  it("defaults to on", () => {
+    expect(parseKeepaliveHeader(undefined)).toEqual({ enabled: true });
+    expect(parseKeepaliveHeader("ON")).toEqual({ enabled: true });
+  });
+
+  it("accepts off", () => {
+    expect(parseKeepaliveHeader(" off ")).toEqual({ enabled: false });
+  });
+
+  it("rejects anything else", () => {
+    expect("error" in parseKeepaliveHeader("no")).toBe(true);
+  });
+});
+
+describe("sseErrorFormat", () => {
+  it("uses the Anthropic shape for api.anthropic.com", () => {
+    expect(sseErrorFormat("https://api.anthropic.com/v1/messages")).toBe("anthropic");
+  });
+
+  it("uses the Anthropic shape for /v1/messages on any host", () => {
+    expect(sseErrorFormat("https://llm.example.com/proxy/v1/messages?beta=true")).toBe("anthropic");
+  });
+
+  it("uses the OpenAI shape otherwise", () => {
+    expect(sseErrorFormat("https://llm.example.com/v1/chat/completions")).toBe("openai");
+    expect(sseErrorFormat("not a url")).toBe("openai");
+  });
+});
+
+function eventData(event: string): Record<string, unknown> {
+  const line = event.split("\n").find((l) => l.startsWith("data: "));
+  return JSON.parse(line!.slice(6));
+}
+
 describe("sseErrorEvent", () => {
-  it("passes an Anthropic error body through as an error event", () => {
-    const body = JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } });
-    expect(sseErrorEvent("anthropic", 529, body)).toBe(`event: error\ndata: ${body}\n\n`);
+  it("passes an Anthropic error body through, adding the upstream status", () => {
+    const body = JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" }, request_id: "req_1" });
+    const event = sseErrorEvent("anthropic", 529, body);
+    expect(event.startsWith("event: error\ndata: ")).toBe(true);
+    expect(eventData(event)).toEqual({ type: "error", error: { type: "overloaded_error", message: "Overloaded", status: 529 }, request_id: "req_1" });
+  });
+
+  it("carries retry-after", () => {
+    const body = JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "Slow down" } });
+    expect(eventData(sseErrorEvent("anthropic", 429, body, "12")).error).toEqual({ type: "rate_limit_error", message: "Slow down", status: 429, retry_after: "12" });
+    expect(eventData(sseErrorEvent("openai", 429, JSON.stringify({ error: { message: "Slow down" } }), "12")).error).toEqual({ message: "Slow down", status: 429, retry_after: "12" });
+  });
+
+  it("maps an OpenAI-shaped error to an Anthropic event with a typed error", () => {
+    const event = sseErrorEvent("anthropic", 429, JSON.stringify({ error: { message: "Rate limited" } }));
+    expect(eventData(event).error).toEqual({ type: "rate_limit_error", message: "Rate limited", status: 429 });
+  });
+
+  it("wraps the proxy's own errors in the Anthropic shape", () => {
+    const event = sseErrorEvent("anthropic", 504, JSON.stringify({ error: "Gateway timeout" }));
+    expect(eventData(event).error).toEqual({ type: "timeout_error", message: "Gateway timeout", status: 504 });
   });
 
   it("wraps a non-JSON Anthropic error", () => {
-    const event = sseErrorEvent("anthropic", 504, "");
-    expect(event.startsWith("event: error\ndata: ")).toBe(true);
-    expect(JSON.parse(event.split("data: ")[1]).error.type).toBe("api_error");
+    expect(eventData(sseErrorEvent("anthropic", 502, "")).error).toEqual({ type: "api_error", message: "Upstream returned status 502", status: 502 });
   });
 
   it("emits OpenAI-style errors as a data event with an error field", () => {
     const body = JSON.stringify({ error: { message: "Rate limited", type: "rate_limit" } });
-    expect(sseErrorEvent(null, 429, body)).toBe(`data: ${JSON.stringify({ error: { message: "Rate limited", type: "rate_limit" } })}\n\n`);
+    expect(sseErrorEvent("openai", 429, body)).toBe(`data: ${JSON.stringify({ error: { message: "Rate limited", type: "rate_limit", status: 429 } })}\n\n`);
   });
 
   it("wraps the proxy's own gateway timeout", () => {
     const event = sseErrorEvent("openai", 504, JSON.stringify({ error: "Gateway timeout" }));
-    expect(JSON.parse(event.slice(6))).toEqual({ error: { message: "Gateway timeout", code: 504 } });
+    expect(eventData(event)).toEqual({ error: { message: "Gateway timeout", code: 504, status: 504 } });
   });
 
   it("keeps the detail of the proxy's own errors", () => {
-    const event = sseErrorEvent(null, 502, JSON.stringify({ error: "Failed to reach target", detail: "socket closed" }));
-    expect(JSON.parse(event.slice(6))).toEqual({ error: { message: "Failed to reach target: socket closed", code: 502 } });
+    const event = sseErrorEvent("openai", 502, JSON.stringify({ error: "Failed to reach target", detail: "socket closed" }));
+    expect(eventData(event)).toEqual({ error: { message: "Failed to reach target: socket closed", code: 502, status: 502 } });
   });
 });
 
+const upstreamComment = (status: number, headers: Record<string, string>) =>
+  `: grepture-upstream ${JSON.stringify({ status, headers })}\n\n`;
+
 describe("deferredStreamingResult", () => {
-  it("relays the upstream stream and records its real status and headers", async () => {
-    const upstream: ForwardResult = {
-      mode: "streaming",
-      status: 200,
-      headers: { "content-type": "text/event-stream", "x-upstream": "1" },
-      rawBody: scriptedStream([[0, "data: hi\n\n"]]),
-    };
+  it("marks the stream as committed early", () => {
+    const result = deferredStreamingResult(new Promise(() => {}), "openai");
+    expect(result.headers[EARLY_STREAM_HEADER]).toBe("true");
+  });
+
+  it("sends the upstream headers as a comment, then relays the stream", async () => {
+    const headers = { "content-type": "text/event-stream", "x-upstream": "1" };
+    const upstream: ForwardResult = { mode: "streaming", status: 200, headers, rawBody: scriptedStream([[0, "data: hi\n\n"]]) };
     const result = deferredStreamingResult(Bun.sleep(30).then(() => upstream), "openai");
     if (result.mode !== "streaming") throw new Error("expected streaming");
-    expect(await collect(result.rawBody)).toBe("data: hi\n\n");
+    expect(await collect(result.rawBody)).toBe(upstreamComment(200, headers) + "data: hi\n\n");
     expect(result.headers["x-upstream"]).toBe("1");
   });
 
-  it("turns a late upstream error into an SSE error event", async () => {
-    const upstream: ForwardResult = { mode: "buffered", status: 500, headers: {}, body: JSON.stringify({ error: { message: "boom" } }) };
-    const result = deferredStreamingResult(Bun.sleep(30).then(() => upstream), null);
+  it("turns a late upstream error into an SSE error event with status and retry-after", async () => {
+    const headers = { "retry-after": "7" };
+    const upstream: ForwardResult = { mode: "buffered", status: 429, headers, body: JSON.stringify({ error: { message: "boom" } }) };
+    const result = deferredStreamingResult(Bun.sleep(30).then(() => upstream), "openai");
     if (result.mode !== "streaming") throw new Error("expected streaming");
-    expect(await collect(result.rawBody)).toBe(`data: ${JSON.stringify({ error: { message: "boom" } })}\n\n`);
-    expect(result.status).toBe(500);
+    expect(await collect(result.rawBody)).toBe(upstreamComment(429, headers) + `data: ${JSON.stringify({ error: { message: "boom", status: 429, retry_after: "7" } })}\n\n`);
+    expect(result.status).toBe(429);
+  });
+
+  it("sends event: error for a late error on an Anthropic-format request", async () => {
+    const upstream: ForwardResult = { mode: "buffered", status: 529, headers: {}, body: JSON.stringify({ error: { message: "busy" } }) };
+    const result = deferredStreamingResult(Bun.sleep(10).then(() => upstream), sseErrorFormat("https://llm.example.com/v1/messages"));
+    if (result.mode !== "streaming") throw new Error("expected streaming");
+    expect(await collect(result.rawBody)).toContain("event: error\ndata: ");
+  });
+
+  it("calls onCancel when the caller disconnects before the upstream answers", async () => {
+    let cancelled = false;
+    const result = deferredStreamingResult(new Promise(() => {}), "openai", () => { cancelled = true; });
+    if (result.mode !== "streaming") throw new Error("expected streaming");
+    await result.rawBody.cancel();
+    expect(cancelled).toBe(true);
+  });
+});
+
+describe("forwardRequest with a client signal", () => {
+  it("aborts the upstream request as soon as the client disconnects", async () => {
+    let upstreamAborted = false;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        req.signal.addEventListener("abort", () => { upstreamAborted = true; });
+        await Bun.sleep(2000);
+        return new Response("late");
+      },
+    });
+    try {
+      const client = new AbortController();
+      const ctx = { method: "POST", headers: {}, body: "{}", targetUrl: `http://localhost:${server.port}/v1/chat/completions` } as RequestContext;
+      const pending = forwardRequest(ctx, 10_000, true, client.signal);
+      await Bun.sleep(100);
+      client.abort();
+      const result = await pending;
+      await Bun.sleep(100);
+      expect(result.status).toBe(499);
+      expect(upstreamAborted).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

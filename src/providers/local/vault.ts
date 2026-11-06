@@ -1,4 +1,5 @@
 import type { TokenVault } from "../types";
+import { vaultKey } from "../vault-key";
 
 type VaultEntry = { value: string; expiresAt: number };
 
@@ -13,13 +14,16 @@ export class LocalTokenVault implements TokenVault {
     if (this.cleanupTimer.unref) this.cleanupTimer.unref();
   }
 
-  async set(teamId: string, token: string, value: string, ttl: number): Promise<void> {
-    const key = `${teamId}:${token}`;
-    this.store.set(key, { value, expiresAt: Date.now() + ttl * 1000 });
+  async set(teamId: string, token: string, value: string, ttl: number, scope: string | null = null): Promise<void> {
+    this.store.set(vaultKey(teamId, token, scope), { value, expiresAt: Date.now() + ttl * 1000 });
   }
 
-  async get(teamId: string, token: string): Promise<string | null> {
-    const key = `${teamId}:${token}`;
+  async get(teamId: string, token: string, scope: string | null = null): Promise<string | null> {
+    if (!scope) return this.read(vaultKey(teamId, token, null));
+    return this.read(vaultKey(teamId, token, scope)) ?? this.read(vaultKey(teamId, token, null));
+  }
+
+  private read(key: string): string | null {
     const entry = this.store.get(key);
     if (!entry) return null;
     if (Date.now() > entry.expiresAt) {

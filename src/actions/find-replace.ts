@@ -1,3 +1,4 @@
+import { maskToken } from "../pii/token";
 import type { TokenVault } from "../providers/types";
 import { transformStrings, type StringTransform } from "./transform-strings";
 import type { FindReplaceAction, RequestContext, ActionResult } from "../types";
@@ -38,7 +39,7 @@ export async function executeFindReplace(
     for (let i = matches.length - 1; i >= 0; i--) {
       const m = matches[i];
       if (m.index === undefined) continue;
-      const token = `${prefix}${crypto.randomUUID()}`;
+      const token = maskToken(ctx, prefix, m[0]);
       await vault.set(ctx.auth.team_id, token, m[0], ttl);
       result = result.slice(0, m.index) + token + result.slice(m.index + m[0].length);
       if (ctx.debugTrace) {

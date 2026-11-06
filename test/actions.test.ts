@@ -193,6 +193,26 @@ describe("executeFindReplace", () => {
     expect(stored).toContain("AB654321D");
   });
 
+  it("mask_and_restore: tokens are stable under X-Grepture-Token-Scope", async () => {
+    const action = makeFindReplaceAction({
+      find: "My name is Jane Doe",
+      replace: "",
+      mode: "mask_and_restore",
+      token_prefix: "pii_",
+    });
+    const run = async (scope: string | null) => {
+      const ctx = makeCtx({ text: "My name is Jane Doe" });
+      ctx.tokenScope = scope;
+      await executeFindReplace(ctx, action, makeVault());
+      return (ctx.parsedBody as { text: string }).text;
+    };
+    const first = await run("conv-1");
+    expect(first).toMatch(/^pii_[0-9a-f-]{36}$/);
+    expect(await run("conv-1")).toBe(first);
+    expect(await run("conv-2")).not.toBe(first);
+    expect(await run(null)).not.toBe(await run(null));
+  });
+
   it("mask_and_restore: right-to-left replacement preserves match boundaries", async () => {
     const ctx = makeCtx({ text: "abc-111-def-222-ghi-333" });
     const vault = makeVault();

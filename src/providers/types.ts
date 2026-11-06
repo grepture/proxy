@@ -41,9 +41,14 @@ export interface ToolCallWriter {
   flush(): Promise<void>;
 }
 
+/**
+ * Stores masked originals. An entry set with a `scope` is bound to it: `get`
+ * returns it only when called with the same scope. Entries set without a scope
+ * restore under any scope or none.
+ */
 export interface TokenVault {
-  set(teamId: string, token: string, value: string, ttl: number): Promise<void>;
-  get(teamId: string, token: string): Promise<string | null>;
+  set(teamId: string, token: string, value: string, ttl: number, scope?: string | null): Promise<void>;
+  get(teamId: string, token: string, scope?: string | null): Promise<string | null>;
 }
 
 export interface RateLimiter {

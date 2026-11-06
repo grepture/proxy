@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   createDetokenizeStream,
-  extractText,
+  extractDeltas,
   endsWithPartialToken,
 } from "../src/proxy/detokenize-stream";
 import type { TokenVault } from "../src/providers/types";
@@ -40,35 +40,35 @@ async function collectStream(stream: ReadableStream<Uint8Array>): Promise<string
 }
 
 // ---------------------------------------------------------------------------
-// extractText
+// extractDeltas
 // ---------------------------------------------------------------------------
-describe("extractText", () => {
+describe("extractDeltas", () => {
   it("extracts text from OpenAI delta content", () => {
-    expect(extractText(openaiDelta("hello"))).toBe("hello");
+    expect(extractDeltas(openaiDelta("hello")).map((d) => d.text)).toEqual(["hello"]);
   });
 
   it("extracts text from Anthropic delta text", () => {
-    expect(extractText(anthropicDelta("world"))).toBe("world");
+    expect(extractDeltas(anthropicDelta("world")).map((d) => d.text)).toEqual(["world"]);
   });
 
-  it("returns null for [DONE]", () => {
-    expect(extractText(OPENAI_DONE)).toBeNull();
+  it("returns nothing for [DONE]", () => {
+    expect(extractDeltas(OPENAI_DONE)).toEqual([]);
   });
 
-  it("returns null for non-text events (ANTHROPIC_START)", () => {
-    expect(extractText(ANTHROPIC_START)).toBeNull();
+  it("returns nothing for non-text events (ANTHROPIC_START)", () => {
+    expect(extractDeltas(ANTHROPIC_START)).toEqual([]);
   });
 
-  it("returns null for ping events", () => {
-    expect(extractText(ANTHROPIC_PING)).toBeNull();
+  it("returns nothing for ping events", () => {
+    expect(extractDeltas(ANTHROPIC_PING)).toEqual([]);
   });
 
-  it("returns null for malformed JSON", () => {
-    expect(extractText("data: {not valid json")).toBeNull();
+  it("returns nothing for malformed JSON", () => {
+    expect(extractDeltas("data: {not valid json")).toEqual([]);
   });
 
   it('returns empty string for empty content delta', () => {
-    expect(extractText(openaiDelta(""))).toBe("");
+    expect(extractDeltas(openaiDelta("")).map((d) => d.text)).toEqual([""]);
   });
 });
 
@@ -467,20 +467,124 @@ describe("Anthropic streaming with split tokens (regression)", () => {
   });
 });
 
-describe("extractText — Responses API", () => {
+describe("extractDeltas — Responses API", () => {
   it("extracts text from a response.output_text.delta event (delta as string)", () => {
     const event = `event: response.output_text.delta\ndata: ${JSON.stringify({
       type: "response.output_text.delta",
       delta: "hello world",
     })}`;
-    expect(extractText(event)).toBe("hello world");
+    expect(extractDeltas(event).map((d) => d.text)).toEqual(["hello world"]);
   });
 
-  it("returns null for non-text Responses events (response.created)", () => {
+  it("returns nothing for non-text Responses events (response.created)", () => {
     const event = `event: response.created\ndata: ${JSON.stringify({
       type: "response.created",
       response: { id: "resp_test" },
     })}`;
-    expect(extractText(event)).toBeNull();
+    expect(extractDeltas(event)).toEqual([]);
+  });
+});
+
+describe("restore in non-text stream fields", () => {
+  const TEAM = "team-1";
+  const TOKEN = "pii_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const ORIGINAL = 'Jane "JD" Doe';
+  const head = TOKEN.slice(0, 15);
+  const tail = TOKEN.slice(15);
+  const data = (json: unknown) => `data: ${JSON.stringify(json)}`;
+
+  async function run(events: string[]): Promise<string> {
+    const vault = makeVault({ [TOKEN]: ORIGINAL });
+    const upstream = chunkedStream(events.map((e) => encodeSSE(e)));
+    const { stream } = createDetokenizeStream(upstream, TEAM, ["pii_"], vault);
+    return collectStream(stream);
+  }
+
+  /** Concatenates one field across all emitted events. */
+  function joined(output: string, pick: (json: Record<string, any>) => unknown): string {
+    return output
+      .split("\n")
+      .filter((line) => line.startsWith("data: {"))
+      .map((line) => pick(JSON.parse(line.slice(6))))
+      .filter((v): v is string => typeof v === "string")
+      .join("");
+  }
+
+  it("restores split tokens in OpenAI tool_calls arguments, JSON-escaped", async () => {
+    const call = (args: string, extra: Record<string, unknown> = {}) =>
+      data({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...extra, function: { arguments: args } }] } }] });
+    const output = await run([
+      call("", { id: "call_1", type: "function" }),
+      call(`{"name":"${head}`),
+      call(`${tail}"}`),
+      OPENAI_DONE,
+    ]);
+    expect(output).not.toContain(head);
+    expect(output).toContain('"id":"call_1"');
+    const args = joined(output, (j) => j.choices?.[0]?.delta?.tool_calls?.[0]?.function?.arguments);
+    expect(JSON.parse(args)).toEqual({ name: ORIGINAL });
+  });
+
+  it("restores split tokens in Anthropic input_json_delta.partial_json", async () => {
+    const part = (partial_json: string) =>
+      data({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json } });
+    const output = await run([part(`{"name":"${head}`), part(`${tail}"}`)]);
+    expect(output).not.toContain(head);
+    expect(JSON.parse(joined(output, (j) => j.delta?.partial_json))).toEqual({ name: ORIGINAL });
+  });
+
+  it("restores split tokens in Anthropic thinking_delta.thinking", async () => {
+    const think = (thinking: string) =>
+      data({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking } });
+    const output = await run([think(`User is ${head}`), think(`${tail}.`)]);
+    expect(joined(output, (j) => j.delta?.thinking)).toBe(`User is ${ORIGINAL}.`);
+  });
+
+  it("restores reasoning_content and reasoning in OpenAI-compatible chunks", async () => {
+    const chunk = (delta: Record<string, string>) => data({ choices: [{ index: 0, delta }] });
+    const output = await run([
+      chunk({ reasoning_content: `A ${head}` }),
+      chunk({ reasoning: `B ${head}` }),
+      chunk({ reasoning_content: tail }),
+      chunk({ reasoning: tail }),
+      OPENAI_DONE,
+    ]);
+    expect(output).not.toContain(head);
+    expect(joined(output, (j) => j.choices?.[0]?.delta?.reasoning_content)).toBe(`A ${ORIGINAL}`);
+    expect(joined(output, (j) => j.choices?.[0]?.delta?.reasoning)).toBe(`B ${ORIGINAL}`);
+  });
+
+  it("keeps channels separate when a token in one interleaves with text in another", async () => {
+    const chunk = (delta: Record<string, string>) => data({ choices: [{ index: 0, delta }] });
+    const output = await run([
+      chunk({ reasoning_content: head }),
+      chunk({ content: "Hello " }),
+      chunk({ reasoning_content: tail }),
+      chunk({ content: "world" }),
+      OPENAI_DONE,
+    ]);
+    expect(joined(output, (j) => j.choices?.[0]?.delta?.reasoning_content)).toBe(ORIGINAL);
+    expect(joined(output, (j) => j.choices?.[0]?.delta?.content)).toBe("Hello world");
+  });
+
+  it("restores Responses function_call_arguments deltas and the done event", async () => {
+    const delta = (d: string) =>
+      `event: response.function_call_arguments.delta\n${data({ type: "response.function_call_arguments.delta", output_index: 0, delta: d })}`;
+    const done = `event: response.function_call_arguments.done\n${data({
+      type: "response.function_call_arguments.done",
+      output_index: 0,
+      arguments: `{"name":"${TOKEN}"}`,
+    })}`;
+    const output = await run([delta(`{"name":"${head}`), delta(`${tail}"}`), done]);
+    expect(output).not.toContain(head);
+    expect(JSON.parse(joined(output, (j) => (typeof j.delta === "string" ? j.delta : undefined)))).toEqual({ name: ORIGINAL });
+    expect(JSON.parse(joined(output, (j) => j.arguments))).toEqual({ name: ORIGINAL });
+  });
+
+  it("restores Responses reasoning summary deltas", async () => {
+    const delta = (d: string) =>
+      data({ type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: d });
+    const output = await run([delta(`Hi ${head}`), delta(tail)]);
+    expect(joined(output, (j) => j.delta)).toBe(`Hi ${ORIGINAL}`);
   });
 });

@@ -1,27 +1,139 @@
 import type { TokenVault } from "../providers/types";
 import { detokenize } from "../actions/tokenize";
 
-/** Extract text content from an SSE event's data payload (Anthropic + OpenAI Chat + OpenAI Responses) */
-export function extractText(eventBlock: string): string | null {
-  for (const line of eventBlock.split("\n")) {
-    if (!line.startsWith("data: ")) continue;
-    const payload = line.slice(6).trim();
+/**
+ * A streamed string fragment the model is generating. `channel` identifies the
+ * logical field it belongs to (one content block, choice, or tool call), so a
+ * token split across deltas is reassembled only within its own field. `json`
+ * marks fragments of a JSON document (tool arguments), whose restored values
+ * must be JSON-escaped.
+ */
+export interface StreamDelta {
+  channel: string;
+  text: string;
+  json: boolean;
+}
+
+interface DeltaRef extends StreamDelta {
+  set(json: Record<string, unknown>, text: string): void;
+}
+
+type Json = Record<string, unknown>;
+
+function isObject(v: unknown): v is Json {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Finds every generated string fragment in one parsed SSE payload. */
+function findDeltas(json: Json): DeltaRef[] {
+  const refs: DeltaRef[] = [];
+
+  // OpenAI Responses API: { type: "response.*.delta", delta: "..." } covers
+  // output text, refusals, reasoning text/summaries and function arguments.
+  if (typeof json.delta === "string") {
+    const type = typeof json.type === "string" ? json.type : "";
+    const sub = json.content_index ?? json.summary_index ?? "";
+    refs.push({
+      channel: `r:${type}:${json.output_index ?? ""}:${sub}`,
+      text: json.delta,
+      json: type.endsWith("arguments.delta"),
+      set: (j, t) => { j.delta = t; },
+    });
+    return refs;
+  }
+
+  // Anthropic: content_block_delta with text / partial_json / thinking.
+  if (isObject(json.delta)) {
+    const delta = json.delta;
+    const block = `a:${json.index ?? 0}`;
+    for (const field of ["text", "partial_json", "thinking"] as const) {
+      const value = delta[field];
+      if (typeof value !== "string") continue;
+      refs.push({
+        channel: `${block}:${field}`,
+        text: value,
+        json: field === "partial_json",
+        set: (j, t) => { (j.delta as Json)[field] = t; },
+      });
+    }
+    return refs;
+  }
+
+  // OpenAI Chat Completions (and compatible providers): content, reasoning
+  // (reasoning_content / reasoning) and tool_calls[].function.arguments.
+  if (Array.isArray(json.choices)) {
+    json.choices.forEach((choice: unknown, ci: number) => {
+      if (!isObject(choice) || !isObject(choice.delta)) return;
+      const delta = choice.delta;
+      const prefix = `o:${choice.index ?? ci}`;
+      for (const field of ["content", "reasoning_content", "reasoning"] as const) {
+        const value = delta[field];
+        if (typeof value !== "string") continue;
+        refs.push({
+          channel: `${prefix}:${field}`,
+          text: value,
+          json: false,
+          set: (j, t) => { ((j.choices as Json[])[ci].delta as Json)[field] = t; },
+        });
+      }
+      if (!Array.isArray(delta.tool_calls)) return;
+      delta.tool_calls.forEach((call: unknown, ti: number) => {
+        if (!isObject(call) || !isObject(call.function)) return;
+        const args = call.function.arguments;
+        if (typeof args !== "string") return;
+        refs.push({
+          channel: `${prefix}:tool:${call.index ?? ti}`,
+          text: args,
+          json: true,
+          set: (j, t) => {
+            const calls = ((j.choices as Json[])[ci].delta as Json).tool_calls as Json[];
+            (calls[ti].function as Json).arguments = t;
+          },
+        });
+      });
+    });
+  }
+  return refs;
+}
+
+function parseData(eventBlock: string): { lines: string[]; index: number; json: Json } | null {
+  const lines = eventBlock.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith("data: ")) continue;
+    const payload = lines[i].slice(6).trim();
     if (payload === "[DONE]") return null;
     try {
-      const json = JSON.parse(payload);
-      // Anthropic: content_block_delta has { delta: { text: "..." } }
-      if (json.delta?.text !== undefined) return json.delta.text;
-      // OpenAI Chat Completions: { choices: [{ delta: { content: "..." } }] }
-      const content = json.choices?.[0]?.delta?.content;
-      if (content !== undefined) return content;
-      // OpenAI Responses API: response.output_text.delta has { delta: "..." } (string)
-      // Also covers response.refusal.delta which has the same shape.
-      if (typeof json.delta === "string") return json.delta;
+      const json: unknown = JSON.parse(payload);
+      if (isObject(json)) return { lines, index: i, json };
     } catch {
       // Not parseable
     }
   }
   return null;
+}
+
+/** Extract the generated string fragments from an SSE event (Anthropic, OpenAI Chat, OpenAI Responses). */
+export function extractDeltas(eventBlock: string): StreamDelta[] {
+  const parsed = parseData(eventBlock);
+  if (!parsed) return [];
+  return findDeltas(parsed.json).map(({ channel, text, json }) => ({ channel, text, json }));
+}
+
+/** Rewrite the fragments of the given channels in an SSE event. */
+function replaceDeltas(eventBlock: string, texts: Map<string, string>): string {
+  const parsed = parseData(eventBlock);
+  if (!parsed) return eventBlock;
+  for (const ref of findDeltas(parsed.json)) {
+    const text = texts.get(ref.channel);
+    if (text !== undefined) ref.set(parsed.json, text);
+  }
+  parsed.lines[parsed.index] = "data: " + JSON.stringify(parsed.json);
+  return parsed.lines.join("\n");
+}
+
+/** JSON-escapes a restored value for insertion inside a JSON string literal. */
+export function jsonEscape(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
 }
 
 /** Check if accumulated text ends with a potential partial token */
@@ -54,7 +166,7 @@ export function endsWithPartialToken(
  * end — because a complete token doesn't need more chars to resolve, and
  * holding for it would only delay flush.
  *
- * This matters when pendingText contains BOTH a complete token (earlier) AND
+ * This matters when a channel's text contains BOTH a complete token (earlier) AND
  * an incomplete one trailing. The old logic flushed eagerly on the complete
  * one and abandoned the trailing partial, causing it to emit raw across two
  * separate events. This function lets the caller keep holding instead.
@@ -137,60 +249,46 @@ export function createDetokenizeStream(
   );
 
   let sseBuffer = ""; // Incomplete SSE data waiting for \n\n
-  let pendingText = ""; // Accumulated text content from held events
   let heldEvents: string[] = []; // SSE events being held
+  // Generated text per channel across the held events, and whether that
+  // channel is JSON-encoded (tool arguments).
+  let pending = new Map<string, { text: string; json: boolean }>();
 
-  // Responses API terminal events carry the full final assistant text in nested
-  // fields the delta-walker doesn't know about. Clients like TypingMind read
-  // from these events and overwrite whatever the deltas rendered, so any
-  // tokens here would leak even if every delta was detokenized correctly.
-  //
-  // - response.output_text.done       : data.text
-  // - response.content_part.done       : data.part.text
-  // - response.output_item.done        : data.item.content[].text
-  // - response.completed               : data.response.output[].content[].text
-  //
-  // We detokenize the entire event block string — the regex only matches
-  // `<prefix><uuid>` patterns, so nothing else in the JSON gets touched.
-  const TERMINAL_EVENT_TYPES = [
-    '"response.output_text.done"',
-    '"response.content_part.done"',
-    '"response.output_item.done"',
-    '"response.completed"',
-  ];
-  function isResponsesTerminalEvent(block: string): boolean {
-    for (const t of TERMINAL_EVENT_TYPES) {
-      if (block.includes(t)) return true;
-    }
-    return false;
+  // Responses API terminal events (response.*.done, response.completed) carry
+  // the full final text, arguments and reasoning in nested fields the delta
+  // walker doesn't know about. Clients like TypingMind read from these events
+  // and overwrite whatever the deltas rendered, so any tokens here would leak
+  // even if every delta was detokenized correctly.
+  function isResponsesTerminalEvent(json: Json): boolean {
+    const type = json.type;
+    if (typeof type !== "string" || !type.startsWith("response.")) return false;
+    return type.endsWith(".done") || type === "response.completed" || type === "response.incomplete";
   }
 
-  /** Replace text content in an SSE event's JSON payload */
-  function replaceTextInEvent(eventBlock: string, newText: string): string {
-    const lines = eventBlock.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (!lines[i].startsWith("data: ")) continue;
-      try {
-        const json = JSON.parse(lines[i].slice(6));
-        if (json.delta?.text !== undefined) {
-          // Anthropic
-          json.delta.text = newText;
-        } else if (json.choices?.[0]?.delta?.content !== undefined) {
-          // OpenAI Chat Completions
-          json.choices[0].delta.content = newText;
-        } else if (typeof json.delta === "string") {
-          // OpenAI Responses API
-          json.delta = newText;
-        } else {
-          continue;
-        }
-        lines[i] = "data: " + JSON.stringify(json);
-        return lines.join("\n");
-      } catch {
-        continue;
-      }
+  /** Detokenize every string in a parsed event; `arguments` hold JSON text. */
+  async function detokenizeValue(value: unknown, key: string | null): Promise<unknown> {
+    if (typeof value === "string") {
+      if (!tokenRegex.test(value)) return value;
+      return detokenize(value, teamId, tokenPrefixes, vault, key === "arguments" ? jsonEscape : undefined);
     }
-    return eventBlock;
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((v) => detokenizeValue(v, null)));
+    }
+    if (isObject(value)) {
+      const out: Json = {};
+      for (const [k, v] of Object.entries(value)) out[k] = await detokenizeValue(v, k);
+      return out;
+    }
+    return value;
+  }
+
+  /** If `block` is a Responses terminal event, returns it detokenized; else null. */
+  async function detokenizeTerminal(block: string): Promise<string | null> {
+    const parsed = parseData(block);
+    if (!parsed || !isResponsesTerminalEvent(parsed.json)) return null;
+    if (!tokenRegex.test(block)) return block;
+    parsed.lines[parsed.index] = "data: " + JSON.stringify(await detokenizeValue(parsed.json, null));
+    return parsed.lines.join("\n");
   }
 
   function emit(controller: TransformStreamDefaultController<Uint8Array>, eventBlock: string) {
@@ -199,45 +297,53 @@ export function createDetokenizeStream(
     controller.enqueue(encoder.encode(data));
   }
 
+  function hold(block: string) {
+    heldEvents.push(block);
+    for (const delta of extractDeltas(block)) {
+      const entry = pending.get(delta.channel);
+      if (entry) entry.text += delta.text;
+      else pending.set(delta.channel, { text: delta.text, json: delta.json });
+    }
+  }
+
+  function anyIncomplete(): boolean {
+    for (const { text } of pending.values()) {
+      if (endsWithIncompleteToken(text, tokenPrefixes)) return true;
+    }
+    return false;
+  }
+
   async function flushHeld(controller: TransformStreamDefaultController<Uint8Array>) {
     if (heldEvents.length === 0) return;
 
-    const hasToken = tokenRegex.test(pendingText);
+    // Detokenize each channel's merged text. A channel with a token gets its
+    // whole restored text in its last held event, and empty strings in the
+    // earlier ones, so a token split across deltas is replaced intact.
+    const restored = new Map<string, string>();
+    for (const [channel, { text, json }] of pending) {
+      if (!tokenRegex.test(text)) continue;
+      restored.set(channel, await detokenize(text, teamId, tokenPrefixes, vault, json ? jsonEscape : undefined));
+    }
 
-    if (hasToken) {
-      const detokenized = await detokenize(pendingText, teamId, tokenPrefixes, vault);
-
-      // Find the last text event to use as the template for emitting merged text
-      let lastTextIdx = -1;
-      for (let i = heldEvents.length - 1; i >= 0; i--) {
-        if (extractText(heldEvents[i]) !== null) {
-          lastTextIdx = i;
-          break;
-        }
-      }
-
-      for (let i = 0; i < heldEvents.length; i++) {
-        const isTextEvent = extractText(heldEvents[i]) !== null;
-        if (isTextEvent && i === lastTextIdx) {
-          // Emit the merged detokenized text in this event
-          emit(controller, replaceTextInEvent(heldEvents[i], detokenized));
-        } else if (isTextEvent) {
-          // Skip — content merged into the last text event
-          continue;
-        } else {
-          // Non-text event (ping, message_start, etc.) — pass through
-          emit(controller, heldEvents[i]);
-        }
-      }
+    if (restored.size === 0) {
+      for (const event of heldEvents) emit(controller, event);
     } else {
-      // No tokens found — emit all as-is
-      for (const event of heldEvents) {
-        emit(controller, event);
-      }
+      const lastIdx = new Map<string, number>();
+      heldEvents.forEach((event, i) => {
+        for (const { channel } of extractDeltas(event)) lastIdx.set(channel, i);
+      });
+      heldEvents.forEach((event, i) => {
+        const texts = new Map<string, string>();
+        for (const { channel } of extractDeltas(event)) {
+          const text = restored.get(channel);
+          if (text !== undefined) texts.set(channel, lastIdx.get(channel) === i ? text : "");
+        }
+        emit(controller, texts.size > 0 ? replaceDeltas(event, texts) : event);
+      });
     }
 
     heldEvents = [];
-    pendingText = "";
+    pending = new Map();
   }
 
   const MAX_HELD = 30; // Safety limit to prevent unbounded holding
@@ -256,22 +362,20 @@ export function createDetokenizeStream(
           if (!trimmed) continue;
 
           // Terminal Responses events carry the full final text. Flush any
-          // pending deltas first, then detokenize the whole block and emit.
-          if (isResponsesTerminalEvent(trimmed)) {
+          // pending deltas first, then emit the detokenized event.
+          const terminal = await detokenizeTerminal(trimmed);
+          if (terminal !== null) {
             await flushHeld(controller);
-            const detokenized = await detokenize(trimmed, teamId, tokenPrefixes, vault);
-            emit(controller, detokenized);
+            emit(controller, terminal);
             continue;
           }
 
-          const text = extractText(trimmed);
-          heldEvents.push(trimmed);
-          if (text !== null) pendingText += text;
+          hold(trimmed);
 
           // Decide: flush or keep holding.
           //
-          // Hold as long as there's an *incomplete* trailing token that might
-          // still complete in a future delta — even if `pendingText` already
+          // Hold as long as any channel has an *incomplete* trailing token that
+          // might still complete in a future delta — even if it already
           // contains earlier complete tokens. Flushing on the earlier complete
           // one would abandon the trailing partial and emit it raw across the
           // boundary.
@@ -281,7 +385,7 @@ export function createDetokenizeStream(
           // flush regardless to avoid unbounded holding.
           if (heldEvents.length >= MAX_HELD) {
             await flushHeld(controller);
-          } else if (!endsWithIncompleteToken(pendingText, tokenPrefixes)) {
+          } else if (!anyIncomplete()) {
             await flushHeld(controller);
           }
           // else: incomplete token at end — keep holding
@@ -292,7 +396,7 @@ export function createDetokenizeStream(
           emit(controller, event);
         }
         heldEvents = [];
-        pendingText = "";
+        pending = new Map();
       }
     },
 
@@ -300,14 +404,12 @@ export function createDetokenizeStream(
       try {
         if (sseBuffer.trim()) {
           const trimmed = sseBuffer.trim();
-          if (isResponsesTerminalEvent(trimmed)) {
+          const terminal = await detokenizeTerminal(trimmed);
+          if (terminal !== null) {
             await flushHeld(controller);
-            const detokenized = await detokenize(trimmed, teamId, tokenPrefixes, vault);
-            emit(controller, detokenized);
+            emit(controller, terminal);
           } else {
-            const text = extractText(trimmed);
-            heldEvents.push(trimmed);
-            if (text !== null) pendingText += text;
+            hold(trimmed);
           }
         }
         await flushHeld(controller);

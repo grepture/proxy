@@ -8,7 +8,7 @@ import { forwardRequest, type ForwardResult } from "./forward";
 import { assertSafeTarget, SsrfBlockedError } from "./ssrf-guard";
 import { forwardWithFallback } from "./forward-with-fallback";
 import { parseTimeoutHeader, resolveTimeoutMs } from "./timeout";
-import { parseTokenScopeHeader } from "../pii/token";
+import { parseTokenBindingHeader, parseTokenScopeHeader, requestVault } from "../pii/token";
 import { KEEPALIVE_GRACE_MS, KEEPALIVE_INTERVAL_MS, deferredStreamingResult, parseKeepaliveHeader, settleWithin, sseErrorFormat, withHeartbeat } from "./keepalive";
 import { parseTraceparent } from "./traceparent";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
@@ -108,6 +108,10 @@ export async function proxyHandler(c: Context): Promise<Response> {
   const tokenScopeHeader = parseTokenScopeHeader(c.req.header("x-grepture-token-scope"));
   if ("error" in tokenScopeHeader) {
     return c.json({ error: tokenScopeHeader.error }, 400);
+  }
+  const tokenBindingHeader = parseTokenBindingHeader(c.req.header("x-grepture-token-binding"), tokenScopeHeader.scope);
+  if ("error" in tokenBindingHeader) {
+    return c.json({ error: tokenBindingHeader.error }, 400);
   }
 
   const keepaliveHeader = parseKeepaliveHeader(c.req.header("x-grepture-keepalive"));
@@ -235,9 +239,11 @@ export async function proxyHandler(c: Context): Promise<Response> {
     seq,
     sessionId,
     tokenScope: tokenScopeHeader.scope,
+    tokenScopeBound: tokenBindingHeader.bound,
     budgetSpendPct: null,
     routedFrom: null,
   };
+  const vault = requestVault(providers.vault, ctx);
 
   // --- Debug trace (opt-in, default off) ---
   // Header `X-Grepture-Debug: true` (or SDK `debug: true`) enables a per-request
@@ -384,7 +390,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     const matchedInput = skipRules ? [] : matchRules(ctx, inputRules);
 
     if (matchedInput.length > 0) {
-      const inputResult = await runPipeline(ctx, matchedInput, providers.vault, providers.quota);
+      const inputResult = await runPipeline(ctx, matchedInput, vault, providers.quota);
       inputRulesApplied = inputResult.rulesApplied;
       allTags.push(...inputResult.tags);
       if (inputResult.aiSampling) aiSampling = inputResult.aiSampling;
@@ -492,7 +498,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         upstreamBody,
         auth.team_id,
         tokenizePrefixes,
-        providers.vault,
+        vault,
       );
 
       // Build response headers
@@ -556,7 +562,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
     const matchedOutput = matchRules(responseCtx, outputRules);
 
     if (matchedOutput.length > 0) {
-      const outputResult = await runPipeline(responseCtx, matchedOutput, providers.vault, providers.quota);
+      const outputResult = await runPipeline(responseCtx, matchedOutput, vault, providers.quota);
       inputRulesApplied.push(...outputResult.rulesApplied);
       allTags.push(...outputResult.tags);
       if (outputResult.aiSampling) aiSampling = outputResult.aiSampling;
@@ -588,7 +594,7 @@ export async function proxyHandler(c: Context): Promise<Response> {
         forwardResult.body,
         auth.team_id,
         tokenizePrefixes,
-        providers.vault,
+        vault,
       );
     }
   } catch (err) {

@@ -70,12 +70,17 @@ export async function executeTokenize(
   return {};
 }
 
-/** Detokenize: scan text for tokens matching prefix, look up in vault, replace with originals. */
+/**
+ * Detokenize: scan text for tokens matching prefix, look up in vault, replace
+ * with originals. `encode` adapts each original to the surrounding syntax
+ * (e.g. JSON-escaping inside streamed tool arguments).
+ */
 export async function detokenize(
   text: string,
   teamId: string,
   tokenPrefixes: string[],
   vault: TokenVault,
+  encode: (value: string) => string = (value) => value,
 ): Promise<string> {
   if (tokenPrefixes.length === 0) return text;
 
@@ -94,8 +99,8 @@ export async function detokenize(
   let result = text;
   for (const token of unique) {
     const original = await vault.get(teamId, token);
-    const replacement = original ?? "[TOKEN_EXPIRED]";
-    result = result.replaceAll(token, replacement);
+    const replacement = encode(original ?? "[TOKEN_EXPIRED]");
+    result = result.replaceAll(token, () => replacement);
   }
 
   return result;

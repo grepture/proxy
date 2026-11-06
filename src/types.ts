@@ -346,6 +346,9 @@ export type RequestContext = {
   /** From X-Grepture-Token-Scope: makes mask-and-restore tokens deterministic
    * within this scope (see pii/token.ts). */
   tokenScope?: string | null;
+  /** From X-Grepture-Token-Binding: scope — tokens minted by this request
+   * restore only under the same tokenScope. */
+  tokenScopeBound?: boolean;
   /** Highest spend ratio (0-100+) across budgets matching this request, or
    * null when no budget matches. Consumed by route_model. */
   budgetSpendPct: number | null;

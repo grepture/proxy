@@ -115,3 +115,61 @@ describe("find_replace inline (?i) flag", () => {
     expect(JSON.parse(ctx.body).messages[0].content).toBe("[PINECONE_KEY]");
   });
 });
+
+describe("opaque provider blobs are never rewritten", () => {
+  // A blob that contains a phone-number-shaped run and a find target.
+  const BLOB = "EqQBCkgIARABGAIi555-123-4567QL+secretword/4ZbXW==";
+  const SECRET_MASK: FindReplaceAction = {
+    id: "a2", enabled: true, type: "find_replace", find: "secretword", replace: "[X]",
+    is_regex: false, case_sensitive: false, mode: "mask_and_restore", token_prefix: "tok_", ttl_seconds: 60,
+  };
+
+  const body = {
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Call 555-123-4567", signature: BLOB },
+          { type: "redacted_thinking", data: BLOB },
+        ],
+        reasoning_details: [
+          { type: "reasoning.text", text: "secretword", signature: BLOB },
+          { type: "reasoning.encrypted", data: BLOB },
+        ],
+      },
+    ],
+    input: [
+      { type: "reasoning", encrypted_content: BLOB, summary: [] },
+      { type: "compaction", encrypted_content: BLOB },
+    ],
+    contents: [{ parts: [{ text: "hi", thoughtSignature: BLOB }] }],
+    tools_input: { signature: "555-123-4567" },
+  };
+
+  for (const [name, run] of [
+    ["redact_pii", (ctx: RequestContext) => executeRedactPii(ctx, PHONE_MASK, noopVault)],
+    ["find_replace", (ctx: RequestContext) => executeFindReplace(ctx, SECRET_MASK, noopVault)],
+  ] as const) {
+    it(`${name} leaves signatures, encrypted content and redacted thinking intact`, async () => {
+      const ctx = makeCtx(body);
+      await run(ctx);
+      const out = JSON.parse(ctx.body);
+      const msg = out.messages[0];
+      expect(msg.content[0].signature).toBe(BLOB);
+      expect(msg.content[1].data).toBe(BLOB);
+      expect(msg.reasoning_details[0].signature).toBe(BLOB);
+      expect(msg.reasoning_details[1].data).toBe(BLOB);
+      expect(out.input[0].encrypted_content).toBe(BLOB);
+      expect(out.input[1].encrypted_content).toBe(BLOB);
+      expect(out.contents[0].parts[0].thoughtSignature).toBe(BLOB);
+    });
+  }
+
+  it("still redacts readable reasoning text and ordinary `signature` keys", async () => {
+    const ctx = makeCtx(body);
+    await executeRedactPii(ctx, PHONE_MASK, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.messages[0].content[0].thinking).not.toContain("555-123-4567");
+    expect(out.tools_input.signature).not.toContain("555-123-4567");
+  });
+});

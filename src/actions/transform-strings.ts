@@ -12,10 +12,29 @@ const TOOL_BLOCK_TYPES = new Set([
   "function_call", "custom_tool_call", // OpenAI Responses
 ]);
 
+// Provider-issued opaque blobs (reasoning signatures, encrypted reasoning and
+// compaction state). They are signed or encrypted by the provider and carry no
+// readable text, but a PII pattern or find_replace regex can still match a
+// run of base64 inside them; rewriting even one character makes the provider
+// reject the replay ("Invalid signature", "could not be decrypted").
+const OPAQUE_KEYS = new Set([
+  "encrypted_content", // OpenAI Responses reasoning and compaction items
+  "thoughtSignature", "thought_signature", // Gemini
+]);
+
+// Keys that are opaque only on specific block types, since `signature` and
+// `data` are ordinary names elsewhere (e.g. inside tool input).
+const OPAQUE_BLOCK_KEYS: Record<string, string> = {
+  thinking: "signature", // Anthropic
+  redacted_thinking: "data", // Anthropic
+  "reasoning.text": "signature", // OpenRouter reasoning_details
+  "reasoning.encrypted": "data", // OpenRouter reasoning_details
+};
+
 /**
  * Walk only the string leaves of a parsed JSON value, applying `transform`.
- * Tool call IDs are left untouched: rewriting them breaks the pairing between
- * a tool call and its result, which providers reject.
+ * Tool call IDs and provider-issued opaque blobs are left untouched: rewriting
+ * them breaks tool call pairing or signature checks, which providers reject.
  */
 export async function transformStrings(value: unknown, transform: StringTransform): Promise<unknown> {
   if (typeof value === "string") return transform(value);
@@ -26,11 +45,13 @@ export async function transformStrings(value: unknown, transform: StringTransfor
   }
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
-    const isToolBlock = typeof obj.type === "string" && TOOL_BLOCK_TYPES.has(obj.type);
+    const type = typeof obj.type === "string" ? obj.type : "";
+    const isToolBlock = TOOL_BLOCK_TYPES.has(type);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
       const isToolId = TOOL_ID_KEYS.has(k) || (k === "id" && isToolBlock);
-      out[k] = isToolId ? v : await transformStrings(v, transform);
+      const isOpaque = OPAQUE_KEYS.has(k) || OPAQUE_BLOCK_KEYS[type] === k;
+      out[k] = isToolId || isOpaque ? v : await transformStrings(v, transform);
     }
     return out;
   }

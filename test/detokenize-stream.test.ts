@@ -588,3 +588,29 @@ describe("restore in non-text stream fields", () => {
     expect(joined(output, (j) => j.delta)).toBe(`Hi ${ORIGINAL}`);
   });
 });
+
+describe("OpenRouter reasoning_details streaming", () => {
+  const TOKEN = "pii_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const head = TOKEN.slice(0, 15);
+  const tail = TOKEN.slice(15);
+
+  it("restores split tokens in reasoning_details[].text and leaves the signature alone", async () => {
+    const vault = makeVault({ [TOKEN]: "Jane Doe" });
+    const chunk = (detail: Record<string, unknown>) =>
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_details: [{ type: "reasoning.text", index: 0, format: "anthropic-claude-v1", ...detail }] } }] })}`;
+    const events = [
+      chunk({ text: `User is ${head}` }),
+      chunk({ text: `${tail}.` }),
+      chunk({ text: "", signature: "EqQBCkgIARABGAIiQL+pii_abc/def==" }),
+      OPENAI_DONE,
+    ];
+    const { stream } = createDetokenizeStream(chunkedStream(events.map((e) => encodeSSE(e))), "team-1", ["pii_"], vault);
+    const output = await collectStream(stream);
+    const details = output
+      .split("\n")
+      .filter((line) => line.startsWith("data: {"))
+      .map((line) => JSON.parse(line.slice(6)).choices[0].delta.reasoning_details[0]);
+    expect(details.map((d) => d.text).join("")).toBe("User is Jane Doe.");
+    expect(details[2].signature).toBe("EqQBCkgIARABGAIiQL+pii_abc/def==");
+  });
+});

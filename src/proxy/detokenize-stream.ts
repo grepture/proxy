@@ -76,6 +76,27 @@ function findDeltas(json: Json): DeltaRef[] {
           set: (j, t) => { ((j.choices as Json[])[ci].delta as Json)[field] = t; },
         });
       }
+      // OpenRouter: reasoning_details[] carries the same reasoning as
+      // `reasoning`, as text or summary entries. Signatures and encrypted
+      // entries are left alone.
+      if (Array.isArray(delta.reasoning_details)) {
+        delta.reasoning_details.forEach((detail: unknown, di: number) => {
+          if (!isObject(detail)) return;
+          for (const field of ["text", "summary"] as const) {
+            const value = detail[field];
+            if (typeof value !== "string") continue;
+            refs.push({
+              channel: `${prefix}:rd:${detail.index ?? di}:${field}`,
+              text: value,
+              json: false,
+              set: (j, t) => {
+                const details = ((j.choices as Json[])[ci].delta as Json).reasoning_details as Json[];
+                details[di][field] = t;
+              },
+            });
+          }
+        });
+      }
       if (!Array.isArray(delta.tool_calls)) return;
       delta.tool_calls.forEach((call: unknown, ti: number) => {
         if (!isObject(call) || !isObject(call.function)) return;

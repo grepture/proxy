@@ -131,6 +131,7 @@ describe("opaque provider blobs are never rewritten", () => {
         content: [
           { type: "thinking", thinking: "Call 555-123-4567", signature: BLOB },
           { type: "redacted_thinking", data: BLOB },
+          { type: "text", text: "Found it", citations: [{ type: "web_search_result_location", url: "https://x.test", encrypted_index: BLOB, cited_text: "x" }] },
         ],
         reasoning_details: [
           { type: "reasoning.text", text: "secretword", signature: BLOB },
@@ -157,6 +158,7 @@ describe("opaque provider blobs are never rewritten", () => {
       const msg = out.messages[0];
       expect(msg.content[0].signature).toBe(BLOB);
       expect(msg.content[1].data).toBe(BLOB);
+      expect(msg.content[2].citations[0].encrypted_index).toBe(BLOB);
       expect(msg.reasoning_details[0].signature).toBe(BLOB);
       expect(msg.reasoning_details[1].data).toBe(BLOB);
       expect(out.input[0].encrypted_content).toBe(BLOB);

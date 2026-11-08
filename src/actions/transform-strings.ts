@@ -25,7 +25,8 @@ const ID_BLOCK_TYPES = new Set([
 // run of base64 inside them; rewriting even one character makes the provider
 // reject the replay ("Invalid signature", "could not be decrypted").
 const OPAQUE_KEYS = new Set([
-  "encrypted_content", // OpenAI Responses reasoning and compaction items
+  "encrypted_content", // OpenAI Responses reasoning and compaction items, Anthropic web search results
+  "encrypted_index", // Anthropic web search citations
   "thoughtSignature", "thought_signature", // Gemini
 ]);
 

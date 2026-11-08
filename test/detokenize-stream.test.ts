@@ -149,21 +149,39 @@ describe("createDetokenizeStream", () => {
     expect(output).not.toContain(TOKEN);
   });
 
-  it("flushes when buffer limit (MAX_HELD=30) is reached", async () => {
-    const vault = makeVault();
-    // First event ends with "p" (partial prefix for "pii_"), causing holding.
-    // Then 30 more events of "x" — should flush at 30 held without hanging.
-    const events: string[] = [openaiDelta("hello p")];
-    for (let i = 0; i < 30; i++) {
-      events.push(openaiDelta("x"));
-    }
+  it("restores a token spread over many single-character and empty events", async () => {
+    const token = "pii_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const vault = makeVault({ [token]: "Jane Doe" });
+    const events: string[] = [openaiDelta("hi ")];
+    for (const ch of token) events.push(openaiDelta(ch), openaiDelta(""));
     events.push(OPENAI_DONE);
 
-    const upstream = chunkedStream([encodeSSE(...events)]);
-    const { stream } = createDetokenizeStream(upstream, TEAM, ["pii_"], vault);
+    const { stream } = createDetokenizeStream(chunkedStream([encodeSSE(...events)]), TEAM, ["pii_"], vault);
     const output = await collectStream(stream);
 
-    expect(output).toContain("hello p");
+    expect(output).not.toContain("pii_");
+    expect(output).toContain("Jane Doe");
+  });
+
+  it("flushes a stalled channel once enough other text is held", async () => {
+    const vault = makeVault();
+    // reasoning stalls on a partial prefix while content keeps streaming.
+    const chunk = (delta: Record<string, string>) =>
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}`;
+    const events = [chunk({ reasoning: "hello p" })];
+    for (let i = 0; i < 100; i++) events.push(chunk({ content: "x".repeat(50) }));
+
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encodeSSE(...events));
+        // Left open: output must arrive without the stream ending.
+      },
+    });
+    const { stream } = createDetokenizeStream(upstream, TEAM, ["pii_"], vault);
+    const reader = stream.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toContain("hello p");
+    await reader.cancel();
   });
 
   it("passes through data in passthrough mode (empty prefixes)", async () => {

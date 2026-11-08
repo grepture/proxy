@@ -1,16 +1,23 @@
 export type StringTransform = (s: string) => Promise<string>;
 
-// Keys that always hold a tool call ID (Anthropic tool_result, OpenAI chat
-// tool messages, OpenAI Responses function_call / function_call_output).
-const TOOL_ID_KEYS = new Set(["tool_use_id", "tool_call_id", "call_id"]);
+// Keys that always hold a provider-issued ID (Anthropic tool_result, OpenAI
+// chat tool messages, OpenAI Responses function_call / function_call_output
+// and conversation chaining).
+const ID_KEYS = new Set(["tool_use_id", "tool_call_id", "call_id", "previous_response_id"]);
 
-// Block types whose `id` is a provider-issued tool call ID. Anything else named
-// `id` (e.g. inside tool `input`) may be user data and is still scanned.
-const TOOL_BLOCK_TYPES = new Set([
+// Block and item types whose `id` is provider-issued. Anything else named `id`
+// (e.g. inside tool `input`) may be user data and is still scanned. Responses
+// item IDs (cmp_, rs_, msg_, fc_ ...) can contain long digit runs that look
+// like phone numbers, and the API rejects a rewritten one.
+const ID_BLOCK_TYPES = new Set([
   "tool_use", "server_tool_use", "mcp_tool_use", // Anthropic
   "function", // OpenAI chat tool_calls[]
-  "function_call", "custom_tool_call", // OpenAI Responses
-]);
+  "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", // OpenAI Responses
+  "message", "reasoning", "compaction", "item_reference", // OpenAI Responses
+  "web_search_call", "file_search_call", "computer_call", "computer_call_output",
+  "code_interpreter_call", "image_generation_call", "local_shell_call", "local_shell_call_output",
+  "mcp_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response",
+])
 
 // Provider-issued opaque blobs (reasoning signatures, encrypted reasoning and
 // compaction state). They are signed or encrypted by the provider and carry no
@@ -33,7 +40,7 @@ const OPAQUE_BLOCK_KEYS: Record<string, string> = {
 
 /**
  * Walk only the string leaves of a parsed JSON value, applying `transform`.
- * Tool call IDs and provider-issued opaque blobs are left untouched: rewriting
+ * Provider-issued IDs and opaque blobs are left untouched: rewriting
  * them breaks tool call pairing or signature checks, which providers reject.
  */
 export async function transformStrings(value: unknown, transform: StringTransform): Promise<unknown> {
@@ -46,12 +53,12 @@ export async function transformStrings(value: unknown, transform: StringTransfor
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     const type = typeof obj.type === "string" ? obj.type : "";
-    const isToolBlock = TOOL_BLOCK_TYPES.has(type);
+    const hasProviderId = ID_BLOCK_TYPES.has(type);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
-      const isToolId = TOOL_ID_KEYS.has(k) || (k === "id" && isToolBlock);
+      const isProviderId = ID_KEYS.has(k) || (k === "id" && hasProviderId);
       const isOpaque = OPAQUE_KEYS.has(k) || OPAQUE_BLOCK_KEYS[type] === k;
-      out[k] = isToolId || isOpaque ? v : await transformStrings(v, transform);
+      out[k] = isProviderId || isOpaque ? v : await transformStrings(v, transform);
     }
     return out;
   }

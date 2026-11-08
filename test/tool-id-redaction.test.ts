@@ -173,3 +173,32 @@ describe("opaque provider blobs are never rewritten", () => {
     expect(out.tools_input.signature).not.toContain("555-123-4567");
   });
 });
+
+describe("Responses input item IDs are never rewritten", () => {
+  const ID = "cmp_0123456789abcdef5551234567890123";
+  const body = {
+    previous_response_id: "resp_5551234567890",
+    input: [
+      { type: "compaction", id: ID, encrypted_content: "x" },
+      { type: "reasoning", id: "rs_5551234567890", summary: [] },
+      { type: "message", id: "msg_5551234567890", role: "assistant", content: [{ type: "output_text", text: "Call 555-123-4567" }] },
+      { type: "function_call", id: "fc_5551234567890", call_id: "call_5551234567890", name: "f", arguments: "{}" },
+      { type: "item_reference", id: "msg_5551234567891" },
+    ],
+  };
+  const DIGITS: FindReplaceAction = {
+    id: "a4", enabled: true, type: "find_replace", find: "\\d{10,}", replace: "[N]",
+    is_regex: true, case_sensitive: true, mode: "mask_and_restore", token_prefix: "tok_", ttl_seconds: 60,
+  };
+
+  it("leaves item and response IDs intact but redacts message text", async () => {
+    const ctx = makeCtx(body);
+    await executeFindReplace(ctx, DIGITS, noopVault);
+    await executeRedactPii(ctx, PHONE_MASK, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.previous_response_id).toBe(body.previous_response_id);
+    expect(out.input.map((i: { id: string }) => i.id)).toEqual(body.input.map((i) => i.id));
+    expect(out.input[3].call_id).toBe("call_5551234567890");
+    expect(out.input[2].content[0].text).not.toContain("555-123-4567");
+  });
+});

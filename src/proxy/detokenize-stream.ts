@@ -271,6 +271,7 @@ export function createDetokenizeStream(
 
   let sseBuffer = ""; // Incomplete SSE data waiting for \n\n
   let heldEvents: string[] = []; // SSE events being held
+  let heldChars = 0; // Generated characters across the held events
   // Generated text per channel across the held events, and whether that
   // channel is JSON-encoded (tool arguments).
   let pending = new Map<string, { text: string; json: boolean }>();
@@ -321,6 +322,7 @@ export function createDetokenizeStream(
   function hold(block: string) {
     heldEvents.push(block);
     for (const delta of extractDeltas(block)) {
+      heldChars += delta.text.length;
       const entry = pending.get(delta.channel);
       if (entry) entry.text += delta.text;
       else pending.set(delta.channel, { text: delta.text, json: delta.json });
@@ -364,10 +366,18 @@ export function createDetokenizeStream(
     }
 
     heldEvents = [];
+    heldChars = 0;
     pending = new Map();
   }
 
-  const MAX_HELD = 30; // Safety limit to prevent unbounded holding
+  // Safety limits against unbounded holding. Characters, not events: an
+  // upstream may spread one token over many tiny (or empty) events, but a
+  // channel only stays incomplete while its trailing candidate is shorter
+  // than a token, so a lot of held text means another channel is streaming
+  // past a stalled one. The event cap only bounds memory for streams of
+  // events that carry no text.
+  const MAX_HELD_CHARS = 4096;
+  const MAX_HELD_EVENTS = 1000;
 
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     async transform(chunk, controller) {
@@ -401,10 +411,9 @@ export function createDetokenizeStream(
           // one would abandon the trailing partial and emit it raw across the
           // boundary.
           //
-          // MAX_HELD is the safety valve: if the trailing run never resolves
-          // (e.g. model output just happens to look like a long token), we
-          // flush regardless to avoid unbounded holding.
-          if (heldEvents.length >= MAX_HELD) {
+          // The held limits are the safety valve: if a trailing run never
+          // resolves while other output keeps arriving, flush regardless.
+          if (heldChars >= MAX_HELD_CHARS || heldEvents.length >= MAX_HELD_EVENTS) {
             await flushHeld(controller);
           } else if (!anyIncomplete()) {
             await flushHeld(controller);
@@ -417,6 +426,7 @@ export function createDetokenizeStream(
           emit(controller, event);
         }
         heldEvents = [];
+        heldChars = 0;
         pending = new Map();
       }
     },

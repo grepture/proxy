@@ -274,7 +274,9 @@ export function createDetokenizeStream(
   let heldChars = 0; // Generated characters across the held events
   // Generated text per channel across the held events, and whether that
   // channel is JSON-encoded (tool arguments).
-  let pending = new Map<string, { text: string; json: boolean }>();
+  // `elsewhere` counts characters that arrived on other channels since this
+  // one last grew.
+  let pending = new Map<string, { text: string; json: boolean; elsewhere: number }>();
 
   // Responses API terminal events (response.*.done, response.completed) carry
   // the full final text, arguments and reasoning in nested fields the delta
@@ -323,14 +325,26 @@ export function createDetokenizeStream(
     heldEvents.push(block);
     for (const delta of extractDeltas(block)) {
       heldChars += delta.text.length;
+      for (const [channel, other] of pending) {
+        if (channel !== delta.channel) other.elsewhere += delta.text.length;
+      }
       const entry = pending.get(delta.channel);
-      if (entry) entry.text += delta.text;
-      else pending.set(delta.channel, { text: delta.text, json: delta.json });
+      if (entry) {
+        entry.text += delta.text;
+        if (delta.text) entry.elsewhere = 0;
+      } else {
+        pending.set(delta.channel, { text: delta.text, json: delta.json, elsewhere: 0 });
+      }
     }
   }
 
+  // A channel that ended on what looks like the start of a token (e.g.
+  // reasoning ending in "...say it") may never continue. Once more than a
+  // token's worth of text has arrived on other channels since it last grew,
+  // stop holding the stream for it.
   function anyIncomplete(): boolean {
-    for (const { text } of pending.values()) {
+    for (const { text, elsewhere } of pending.values()) {
+      if (elsewhere > maxTokenLen) continue;
       if (endsWithIncompleteToken(text, tokenPrefixes)) return true;
     }
     return false;

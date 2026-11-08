@@ -163,6 +163,28 @@ describe("createDetokenizeStream", () => {
     expect(output).toContain("Jane Doe");
   });
 
+  it("does not hold other channels behind one that ended on a partial prefix", async () => {
+    const chunk = (delta: Record<string, string>) =>
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}`;
+    const events = [chunk({ reasoning: "I should just say it" })];
+    for (let i = 0; i < 20; i++) events.push(chunk({ content: "word " }));
+
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encodeSSE(...events));
+      },
+    });
+    const { stream } = createDetokenizeStream(upstream, TEAM, ["tok_"], makeVault());
+    const reader = stream.getReader();
+    let out = "";
+    // 20 events in; well before the last one, earlier ones must be out.
+    while ((out.match(/"content":"word "/g) ?? []).length < 10) {
+      out += new TextDecoder().decode((await reader.read()).value);
+    }
+    expect(out).toContain("say it");
+    await reader.cancel();
+  });
+
   it("flushes a stalled channel once enough other text is held", async () => {
     const vault = makeVault();
     // reasoning stalls on a partial prefix while content keeps streaming.

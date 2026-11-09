@@ -210,3 +210,57 @@ describe("Responses input item IDs are never rewritten", () => {
     expect(out.input[2].content[0].text).not.toContain("555-123-4567");
   });
 });
+
+describe("other provider references and credentials are never rewritten", () => {
+  const N = "5551234567890";
+  const DIGITS: FindReplaceAction = {
+    id: "a5", enabled: true, type: "find_replace", find: "\\d{10,}", replace: "[N]",
+    is_regex: true, case_sensitive: true, mode: "mask_and_restore", token_prefix: "tok_", ttl_seconds: 60,
+  };
+  const body = {
+    conversation: { id: `conv_${N}` },
+    prompt: { id: `pmpt_${N}`, version: "2", variables: { phone: N } },
+    prompt_cache_key: `user-${N}`,
+    cachedContent: `cachedContents/${N}`,
+    container: `container_${N}`,
+    tools: [
+      { type: "file_search", vector_store_ids: [`vs_${N}`] },
+      { type: "code_interpreter", container: { type: "auto", file_ids: [`file-${N}`] } },
+      { type: "mcp", server_url: "https://mcp.test", authorization: `Bearer ${N}`, headers: { "X-Key": N } },
+    ],
+    mcp_servers: [{ type: "url", url: "https://mcp.test", name: "m", authorization_token: `tok${N}` }],
+    messages: [
+      { role: "assistant", reasoning_details: [{ type: "reasoning.encrypted", id: `rs_${N}`, data: "x" }] },
+    ],
+    contents: [
+      { role: "model", parts: [{ functionCall: { id: `fc-${N}`, name: "f", args: { n: N } } }] },
+      { role: "user", parts: [{ functionResponse: { id: `fc-${N}`, name: "f", response: { n: N } } }] },
+    ],
+    tool_input: { id: N, headers: N, container: N, conversation: N, prompt: { id: N } },
+  };
+
+  it("leaves them intact but still redacts the user data next to them", async () => {
+    const ctx = makeCtx(body);
+    await executeFindReplace(ctx, DIGITS, noopVault);
+    const out = JSON.parse(ctx.body);
+    expect(out.conversation).toEqual(body.conversation);
+    expect(out.prompt.id).toBe(body.prompt.id);
+    expect(out.prompt_cache_key).toBe(body.prompt_cache_key);
+    expect(out.cachedContent).toBe(body.cachedContent);
+    expect(out.container).toBe(body.container);
+    expect(out.tools).toEqual(body.tools);
+    expect(out.mcp_servers).toEqual(body.mcp_servers);
+    expect(out.messages[0].reasoning_details[0].id).toBe(`rs_${N}`);
+    expect(out.contents[0].parts[0].functionCall.id).toBe(`fc-${N}`);
+    expect(out.contents[1].parts[0].functionResponse.id).toBe(`fc-${N}`);
+
+    expect(out.prompt.variables.phone).not.toBe(N);
+    expect(out.contents[0].parts[0].functionCall.args.n).not.toBe(N);
+    expect(out.contents[1].parts[0].functionResponse.response.n).not.toBe(N);
+    expect(out.tool_input.id).not.toBe(N);
+    expect(out.tool_input.headers).not.toBe(N);
+    expect(out.tool_input.container).not.toBe(N);
+    expect(out.tool_input.conversation).not.toBe(N);
+    expect(out.tool_input.prompt.id).not.toBe(N);
+  });
+});

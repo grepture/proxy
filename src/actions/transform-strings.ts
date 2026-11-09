@@ -2,8 +2,11 @@ export type StringTransform = (s: string) => Promise<string>;
 
 // Keys that always hold a provider-issued ID (Anthropic tool_result, OpenAI
 // chat tool messages, OpenAI Responses function_call / function_call_output
-// and conversation chaining).
-const ID_KEYS = new Set(["tool_use_id", "tool_call_id", "call_id", "previous_response_id"]);
+// conversation chaining, files, containers and MCP approvals).
+const ID_KEYS = new Set([
+  "tool_use_id", "tool_call_id", "call_id", "previous_response_id",
+  "file_id", "container_id", "approval_request_id",
+]);
 
 // Block and item types whose `id` is provider-issued. Anything else named `id`
 // (e.g. inside tool `input`) may be user data and is still scanned. Responses

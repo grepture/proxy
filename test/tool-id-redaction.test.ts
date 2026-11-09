@@ -186,6 +186,9 @@ describe("Responses input item IDs are never rewritten", () => {
       { type: "message", id: "msg_5551234567890", role: "assistant", content: [{ type: "output_text", text: "Call 555-123-4567" }] },
       { type: "function_call", id: "fc_5551234567890", call_id: "call_5551234567890", name: "f", arguments: "{}" },
       { type: "item_reference", id: "msg_5551234567891" },
+      { type: "file_search_call", id: "fs_5551234567890", results: [{ file_id: "file-5551234567890", text: "ok" }] },
+      { type: "code_interpreter_call", id: "ci_5551234567890", container_id: "cntr_5551234567890" },
+      { type: "mcp_approval_response", id: "mcpr_5551234567890", approval_request_id: "mcpr_5551234567891", approve: true },
     ],
   };
   const DIGITS: FindReplaceAction = {
@@ -201,6 +204,9 @@ describe("Responses input item IDs are never rewritten", () => {
     expect(out.previous_response_id).toBe(body.previous_response_id);
     expect(out.input.map((i: { id: string }) => i.id)).toEqual(body.input.map((i) => i.id));
     expect(out.input[3].call_id).toBe("call_5551234567890");
+    expect(out.input[5].results[0].file_id).toBe("file-5551234567890");
+    expect(out.input[6].container_id).toBe("cntr_5551234567890");
+    expect(out.input[7].approval_request_id).toBe("mcpr_5551234567891");
     expect(out.input[2].content[0].text).not.toContain("555-123-4567");
   });
 });

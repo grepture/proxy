@@ -14,13 +14,34 @@ export function normalizeMaxTokens(body: Record<string, unknown>): boolean {
   return true;
 }
 
+/**
+ * Splits an optional `/scope/<scope>` segment off the path after the Grepture
+ * key, for clients that can't send X-Grepture-Token-Scope (e.g. n8n Nod):
+ * `/openai/<key>/scope/<scope>/v1/...`.
+ */
+export function splitScope(path: string): { scope: string | null; path: string } {
+  const m = path.match(/^\/scope\/([^/]+)(\/.*)?$/);
+  if (!m) return { scope: null, path };
+  let scope: string;
+  try {
+    scope = decodeURIComponent(m[1]);
+  } catch {
+    scope = m[1];
+  }
+  return { scope, path: m[2] ?? "/" };
+}
+
 export async function openaiMiddleware(c: Context, next: Next) {
   const greptureKey = c.req.param("greptureKey");
   if (!greptureKey) return c.json({ error: "Missing Grepture key in URL" }, 401);
 
   const openaiAuth = c.req.header("authorization");
 
-  const path = new URL(c.req.url).pathname.replace(/^\/openai\/[^/]+/, "");
+  const split = splitScope(new URL(c.req.url).pathname.replace(/^\/openai\/[^/]+/, ""));
+  const path = split.path;
+  if (split.scope && !c.req.header("x-grepture-token-scope")) {
+    c.req.raw.headers.set("x-grepture-token-scope", split.scope);
+  }
   c.set("injectedTarget" as never, `${config.openaiTarget}${path}` as never);
 
   if (path === "/v1/chat/completions") {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeMaxTokens } from "../src/proxy/openai-middleware";
+import { normalizeMaxTokens, splitScope } from "../src/proxy/openai-middleware";
 
 describe("normalizeMaxTokens", () => {
   test("renames max_tokens to max_completion_tokens", () => {
@@ -18,5 +18,19 @@ describe("normalizeMaxTokens", () => {
     const body: Record<string, unknown> = { model: "gpt-4o", max_completion_tokens: 50 };
     expect(normalizeMaxTokens(body)).toBe(false);
     expect(body).toEqual({ model: "gpt-4o", max_completion_tokens: 50 });
+  });
+});
+
+describe("splitScope", () => {
+  test("extracts the scope and keeps the API path", () => {
+    expect(splitScope("/scope/nod-desktop/v1/chat/completions")).toEqual({ scope: "nod-desktop", path: "/v1/chat/completions" });
+  });
+
+  test("decodes an encoded scope", () => {
+    expect(splitScope("/scope/team%3Aben/v1/models")).toEqual({ scope: "team:ben", path: "/v1/models" });
+  });
+
+  test("leaves paths without a scope unchanged", () => {
+    expect(splitScope("/v1/chat/completions")).toEqual({ scope: null, path: "/v1/chat/completions" });
   });
 });

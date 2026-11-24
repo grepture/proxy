@@ -97,3 +97,24 @@ describe("detectPii", () => {
     expect(first).toEqual(second);
   });
 });
+
+describe("detectPii international phone numbers", () => {
+  const cases: Array<[string, string]> = [
+    ["call +49 151 23456789 if late.", "+49 151 23456789"],
+    ["UK: +44 20 7946 0958.", "+44 20 7946 0958"],
+    ["FR +33 1 23 45 67 89", "+33 1 23 45 67 89"],
+    ["US +1 415-555-2671", "+1 415-555-2671"],
+    ["compact +4915123456789 ok", "+4915123456789"],
+  ];
+  for (const [text, expected] of cases) {
+    it(`matches the whole number in "${text}"`, () => {
+      const phones = detectPii(text, ["phone"]);
+      expect(phones).toHaveLength(1);
+      expect(phones[0].match).toBe(expected);
+    });
+  }
+
+  it("ignores short +digit runs", () => {
+    expect(detectPii("score +12 today", ["phone"])).toHaveLength(0);
+  });
+});

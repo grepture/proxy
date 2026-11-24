@@ -6,8 +6,11 @@ export const piiPatterns: Record<PiiCategory, RegExp[]> = {
   phone: [
     // US format
     /(\+1)?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g,
-    // International
-    /\+\d{1,3}[\s.-]?\d{4,14}/g,
+    // International: country code, then digit groups split by single spaces,
+    // dots or dashes (e.g. +49 151 23456789, +33 1 23 45 67 89), with at least
+    // 7 digits after the "+". Starts before the US pattern's match, so it wins
+    // the overlap and the country code isn't left behind.
+    /\+(?=(?:[\s.-]?\d){7})\d{1,3}(?:[\s.-]?\d{1,10}){1,6}/g,
   ],
 
   ssn: [/\b\d{3}-\d{2}-\d{4}\b/g],

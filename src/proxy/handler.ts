@@ -14,10 +14,9 @@ import { parseTraceparent } from "./traceparent";
 import { extractUsage, detectProvider, type UsageInfo } from "./usage";
 import { detokenize } from "../actions/tokenize";
 import { createDetokenizeStream } from "./detokenize-stream";
+import { redactForLog } from "./log-redact";
 import { createResponsesToChatStream } from "./responses-to-chat-stream";
 import { config } from "../config";
-import { detectPii } from "../pii/detector";
-import { replacePii } from "../pii/replacer";
 import type { RequestContext, TokenizeAction, TrafficLogEntry, AuthInfo, PiiCategory, RedactPiiAction, AiDetectPiiAction, FindReplaceAction, PromptMessage, DebugTrace } from "../types";
 import { fetchPrompt } from "../prompts/cache";
 import { resolveMessages } from "../prompts/resolver";
@@ -734,13 +733,6 @@ function collectMaskRestoreCategories(allRules: Array<{ actions: Array<{ type: s
     }
   }
   return [...new Set(categories)];
-}
-
-async function redactForLog(body: string, categories: PiiCategory[]): Promise<string> {
-  if (categories.length === 0) return body;
-  const matches = detectPii(body, categories);
-  if (matches.length === 0) return body;
-  return replacePii(body, matches, "placeholder");
 }
 
 function redactKey(value: string): string {

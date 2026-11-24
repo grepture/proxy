@@ -117,7 +117,7 @@ function findDeltas(json: Json): DeltaRef[] {
   return refs;
 }
 
-function parseData(eventBlock: string): { lines: string[]; index: number; json: Json } | null {
+export function parseData(eventBlock: string): { lines: string[]; index: number; json: Json } | null {
   const lines = eventBlock.split("\n");
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].startsWith("data: ")) continue;
@@ -141,7 +141,7 @@ export function extractDeltas(eventBlock: string): StreamDelta[] {
 }
 
 /** Rewrite the fragments of the given channels in an SSE event. */
-function replaceDeltas(eventBlock: string, texts: Map<string, string>): string {
+export function replaceDeltas(eventBlock: string, texts: Map<string, string>): string {
   const parsed = parseData(eventBlock);
   if (!parsed) return eventBlock;
   for (const ref of findDeltas(parsed.json)) {

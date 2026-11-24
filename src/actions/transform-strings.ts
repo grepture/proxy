@@ -63,6 +63,27 @@ const OPAQUE_BLOCK_KEYS = new Map<string, string[]>([
   ["code_interpreter", ["container"]], // OpenAI tool container ID or config
 ]);
 
+// A mask token (any prefix + UUID) inserted by an earlier rule, or a UUID in
+// the data. Rules run in sequence, so without this a later rule can match
+// inside an earlier token (e.g. a digit run in its UUID), corrupting it so it
+// can never be restored.
+const TOKEN_PATTERN = /\w*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** Applies `transform` to the text between mask tokens, leaving the tokens intact. */
+export async function transformOutsideTokens(s: string, transform: StringTransform): Promise<string> {
+  let out = "";
+  let last = 0;
+  for (const m of s.matchAll(TOKEN_PATTERN)) {
+    const start = m.index ?? 0;
+    if (start > last) out += await transform(s.slice(last, start));
+    out += m[0];
+    last = start + m[0].length;
+  }
+  if (last === 0) return transform(s);
+  if (last < s.length) out += await transform(s.slice(last));
+  return out;
+}
+
 /**
  * Walk only the string leaves of a parsed JSON value, applying `transform`.
  * Provider-issued IDs, opaque blobs and tool credentials are left untouched:
@@ -75,7 +96,7 @@ export function transformStrings(value: unknown, transform: StringTransform): Pr
 
 /** `parentKey` is the key `value` sits under: ROOT for the body, `$.key` for its fields. */
 async function walk(value: unknown, transform: StringTransform, parentKey: string | null): Promise<unknown> {
-  if (typeof value === "string") return transform(value);
+  if (typeof value === "string") return transformOutsideTokens(value, transform);
   if (Array.isArray(value)) {
     const out: unknown[] = new Array(value.length);
     for (let i = 0; i < value.length; i++) out[i] = await walk(value[i], transform, null);

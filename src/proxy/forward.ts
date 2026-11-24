@@ -29,7 +29,7 @@ export async function forwardRequest(
   // Map X-Grepture-Auth-Forward → appropriate auth header on outbound
   const authForward = ctx.headers["x-grepture-auth-forward"];
   if (authForward) {
-    const host = new URL(ctx.targetUrl).hostname;
+    const { hostname: host, pathname } = new URL(ctx.targetUrl);
     if (host.includes("anthropic.com")) {
       // Anthropic uses x-api-key header; strip Bearer prefix if present
       outboundHeaders["x-api-key"] = authForward.replace(/^Bearer\s+/i, "");
@@ -37,6 +37,9 @@ export async function forwardRequest(
       if (!outboundHeaders["anthropic-version"]) {
         outboundHeaders["anthropic-version"] = "2023-06-01";
       }
+    } else if (host.includes("generativelanguage.googleapis.com") && pathname.includes("/openai/")) {
+      // Gemini's OpenAI-compatible endpoints only accept a bearer token
+      outboundHeaders["authorization"] = `Bearer ${authForward.replace(/^Bearer\s+/i, "")}`;
     } else if (host.includes("generativelanguage.googleapis.com")) {
       // Gemini uses x-goog-api-key header; strip Bearer prefix if present
       outboundHeaders["x-goog-api-key"] = authForward.replace(/^Bearer\s+/i, "");

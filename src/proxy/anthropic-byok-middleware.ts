@@ -1,13 +1,16 @@
 import type { Context, Next } from "hono";
 import { config } from "../config";
+import { bearerApiKey, providerPath } from "./path-scope";
 
 export async function anthropicByokMiddleware(c: Context, next: Next) {
   const greptureKey = c.req.param("greptureKey");
   if (!greptureKey) return c.json({ error: "Missing Grepture key in URL" }, 401);
 
-  const anthropicKey = c.req.header("x-api-key");
+  // OpenAI-compatible clients (e.g. n8n Nod on /v1/chat/completions) send the
+  // key as a bearer token.
+  const anthropicKey = c.req.header("x-api-key") ?? bearerApiKey(c, "sk-ant-api");
 
-  const path = new URL(c.req.url).pathname.replace(/^\/anthropic\/[^/]+/, "");
+  const path = providerPath(c, /^\/anthropic\/[^/]+/);
   c.set("injectedTarget" as never, `${config.anthropicTarget}${path}` as never);
 
   if (anthropicKey) {
